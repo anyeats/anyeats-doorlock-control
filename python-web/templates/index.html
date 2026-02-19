@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Door Lock Control</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2em;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 0.9em;
+        }
+
+        .settings-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+        }
+
+        .settings-title {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 1.1em;
+        }
+
+        .setting-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .setting-label {
+            width: 120px;
+            color: #555;
+            font-weight: 500;
+        }
+
+        .setting-value {
+            color: #333;
+            font-family: 'Courier New', monospace;
+            background: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+
+        .port-input-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .port-input {
+            flex: 1;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 1em;
+            font-family: 'Courier New', monospace;
+        }
+
+        .port-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .control-section {
+            margin-bottom: 30px;
+        }
+
+        .button-group {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .btn {
+            padding: 20px;
+            font-size: 1.1em;
+            font-weight: bold;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn-open {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+        }
+
+        .btn-close {
+            background: linear-gradient(135deg, #ee0979 0%, #ff6a00 100%);
+            color: white;
+        }
+
+        .btn-status {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+
+        .btn-id {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+        }
+
+        .btn-test {
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+            color: white;
+            grid-column: 1 / -1;
+        }
+
+        .btn-set-port {
+            padding: 10px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+
+        .btn-set-port:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+        }
+
+        .status-display {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+        }
+
+        .status-title {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .status-content {
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            color: #555;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .log-section {
+            margin-top: 20px;
+        }
+
+        .log-title {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .log-box {
+            background: #1e1e1e;
+            color: #00ff00;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            max-height: 300px;
+            overflow-y: auto;
+            line-height: 1.5;
+        }
+
+        .log-entry {
+            margin-bottom: 5px;
+        }
+
+        .log-timestamp {
+            color: #888;
+        }
+
+        .log-success {
+            color: #00ff00;
+        }
+
+        .log-error {
+            color: #ff4444;
+        }
+
+        .log-info {
+            color: #4da6ff;
+        }
+
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #ddd;
+        }
+
+        .toggle-label {
+            color: #555;
+            font-weight: 500;
+            margin-right: 10px;
+        }
+
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: 0.4s;
+            border-radius: 24px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: 0.4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .toggle-slider {
+            background-color: #667eea;
+        }
+
+        input:checked + .toggle-slider:before {
+            transform: translateX(26px);
+        }
+
+        .toggle-status {
+            margin-left: 10px;
+            color: #667eea;
+            font-weight: bold;
+            font-family: 'Courier New', monospace;
+        }
+
+        @media (max-width: 600px) {
+            .button-group {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 Door Lock Control</h1>
+        <p class="subtitle">시리얼 통신 기반 잠금장치 제어 시스템</p>
+
+        <!-- 설정 섹션 -->
+        <div class="settings-section">
+            <div class="settings-title">📡 통신 설정</div>
+            <div class="setting-row">
+                <span class="setting-label">포트:</span>
+                <span class="setting-value" id="current-port">COM2</span>
+            </div>
+            <div class="setting-row">
+                <span class="setting-label">Baud Rate:</span>
+                <span class="setting-value">9600</span>
+            </div>
+            <div class="setting-row">
+                <span class="setting-label">Parity:</span>
+                <span class="setting-value">None</span>
+            </div>
+            <div class="setting-row">
+                <span class="setting-label">Stop Bits:</span>
+                <span class="setting-value">1</span>
+            </div>
+            <div class="setting-row">
+                <span class="setting-label">장치 ID:</span>
+                <span class="setting-value">1</span>
+            </div>
+            <div class="setting-row">
+                <span class="setting-label">Handshake:</span>
+                <span class="setting-value">RTS/CTS ✓</span>
+            </div>
+
+            <div class="port-input-group">
+                <input type="text" class="port-input" id="port-input" placeholder="COM2" value="COM2">
+                <button class="btn-set-port" onclick="setPort()">포트 변경</button>
+            </div>
+
+            <div class="toggle-container">
+                <span class="toggle-label">CR 추가 (0x0D):</span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="cr-toggle" checked onchange="toggleCR()">
+                    <span class="toggle-slider"></span>
+                </label>
+                <span class="toggle-status" id="cr-status">ON</span>
+            </div>
+        </div>
+
+        <!-- 제어 버튼 -->
+        <div class="control-section">
+            <div class="button-group">
+                <button class="btn btn-open" onclick="openLock()">🔓 OPEN</button>
+                <button class="btn btn-close" onclick="closeLock()">🔒 CLOSE</button>
+                <button class="btn btn-status" onclick="readStatus()">📊 READ STATUS</button>
+                <button class="btn btn-id" onclick="checkId()">🆔 ID CHECK</button>
+                <button class="btn btn-test" onclick="connectionTest()">🔌 연결 테스트</button>
+            </div>
+        </div>
+
+        <!-- 상태 표시 -->
+        <div class="status-display" id="status-display" style="display: none;">
+            <div class="status-title">상태 정보</div>
+            <div class="status-content" id="status-content"></div>
+        </div>
+
+        <!-- 로그 섹션 -->
+        <div class="log-section">
+            <div class="log-title">📋 통신 로그</div>
+            <div class="log-box" id="log-box"></div>
+        </div>
+    </div>
+
+    <script>
+        function addLog(message, type = 'info') {
+            const logBox = document.getElementById('log-box');
+            const timestamp = new Date().toLocaleTimeString('ko-KR');
+            const logClass = type === 'success' ? 'log-success' : type === 'error' ? 'log-error' : 'log-info';
+
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry';
+            logEntry.innerHTML = `<span class="log-timestamp">[${timestamp}]</span> <span class="${logClass}">${message}</span>`;
+
+            logBox.appendChild(logEntry);
+            logBox.scrollTop = logBox.scrollHeight;
+        }
+
+        function showStatus(data) {
+            const statusDisplay = document.getElementById('status-display');
+            const statusContent = document.getElementById('status-content');
+
+            statusDisplay.style.display = 'block';
+            statusContent.textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function openLock() {
+            addLog('🔓 OPEN 명령 전송 중... (0x01 0x00 0x00 0x00)', 'info');
+
+            try {
+                const response = await fetch('/api/open', {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    addLog(`✓ ${data.message}`, 'success');
+                    showStatus(data);
+                } else {
+                    addLog(`✗ ${data.message}`, 'error');
+                    if (data.traceback) {
+                        console.error(data.traceback);
+                    }
+                }
+            } catch (error) {
+                addLog(`✗ 오류: ${error.message}`, 'error');
+            }
+        }
+
+        async function closeLock() {
+            addLog('🔒 CLOSE 명령 전송 중... (0x00 0x00 0x00 0x00)', 'info');
+
+            try {
+                const response = await fetch('/api/close', {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    addLog(`✓ ${data.message}`, 'success');
+                    showStatus(data);
+                } else {
+                    addLog(`✗ ${data.message}`, 'error');
+                    if (data.traceback) {
+                        console.error(data.traceback);
+                    }
+                }
+            } catch (error) {
+                addLog(`✗ 오류: ${error.message}`, 'error');
+            }
+        }
+
+        async function readStatus() {
+            addLog('📊 상태 읽기 요청 중...', 'info');
+
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+
+                if (data.success) {
+                    addLog(`✓ ${data.message}`, 'success');
+                    addLog(`   Raw Data: ${data.raw_data}`, 'info');
+                    showStatus(data);
+                } else {
+                    addLog(`✗ ${data.message}`, 'error');
+                    if (data.traceback) {
+                        console.error(data.traceback);
+                    }
+                }
+            } catch (error) {
+                addLog(`✗ 오류: ${error.message}`, 'error');
+            }
+        }
+
+        async function checkId() {
+            addLog('🆔 ID 확인 중...', 'info');
+
+            try {
+                const response = await fetch('/api/check-id');
+                const data = await response.json();
+
+                if (data.success) {
+                    addLog(`✓ ${data.message}`, 'success');
+                    showStatus(data);
+                } else {
+                    addLog(`✗ ${data.message}`, 'error');
+                    if (data.traceback) {
+                        console.error(data.traceback);
+                    }
+                }
+            } catch (error) {
+                addLog(`✗ 오류: ${error.message}`, 'error');
+            }
+        }
+
+        async function connectionTest() {
+            addLog('🔌 연결 테스트 중...', 'info');
+
+            try {
+                const response = await fetch('/api/connection-test');
+                const data = await response.json();
+
+                if (data.success) {
+                    addLog(`✓ ${data.message}`, 'success');
+                    addLog(`   포트: ${data.port}, Baud Rate: ${data.baudrate}`, 'info');
+                    showStatus(data);
+                } else {
+                    addLog(`✗ ${data.message}`, 'error');
+                    if (data.traceback) {
+                        console.error(data.traceback);
+                    }
+                }
+            } catch (error) {
+                addLog(`✗ 오류: ${error.message}`, 'error');
+            }
+        }
+
+        async function setPort() {
+            const portInput = document.getElementById('port-input');
+            const port = portInput.value.trim();
+
+            if (!port) {
+                addLog('✗ 포트 이름을 입력하세요.', 'error');
+                return;
+            }
+
+            addLog(`🔧 포트를 ${port}로 변경 중...`, 'info');
+
+            try {
+                const response = await fetch('/api/set-port', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ port: port })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    addLog(`✓ ${data.message}`, 'success');
+                    document.getElementById('current-port').textContent = port;
+                } else {
+                    addLog(`✗ ${data.message}`, 'error');
+                }
+            } catch (error) {
+                addLog(`✗ 오류: ${error.message}`, 'error');
+            }
+        }
+
+        async function toggleCR() {
+            const crToggle = document.getElementById('cr-toggle');
+            const crStatus = document.getElementById('cr-status');
+            const appendCR = crToggle.checked;
+
+            addLog(`🔧 CR 추가를 ${appendCR ? '활성화' : '비활성화'}하는 중...`, 'info');
+
+            try {
+                const response = await fetch('/api/toggle-cr', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ append_cr: appendCR })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    addLog(`✓ ${data.message}`, 'success');
+                    crStatus.textContent = appendCR ? 'ON' : 'OFF';
+                    crStatus.style.color = appendCR ? '#667eea' : '#999';
+                } else {
+                    addLog(`✗ ${data.message}`, 'error');
+                    // 실패 시 토글 상태 되돌리기
+                    crToggle.checked = !appendCR;
+                }
+            } catch (error) {
+                addLog(`✗ 오류: ${error.message}`, 'error');
+                // 오류 시 토글 상태 되돌리기
+                crToggle.checked = !appendCR;
+            }
+        }
+
+        // 페이지 로드 시 환영 메시지
+        window.onload = function() {
+            addLog('='.repeat(50), 'info');
+            addLog('Door Lock Control System v1.0', 'success');
+            addLog('시리얼 통신 기반 잠금장치 제어', 'info');
+            addLog('='.repeat(50), 'info');
+            addLog('RTS/CTS 하드웨어 흐름 제어: 활성화', 'info');
+            addLog('CR(0x0D) 추가: 기본 활성화', 'info');
+            addLog('='.repeat(50), 'info');
+            addLog('준비 완료. 버튼을 눌러 장치를 제어하세요.', 'success');
+        };
+    </script>
+</body>
+</html>
