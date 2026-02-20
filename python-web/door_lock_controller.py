@@ -1,31 +1,64 @@
 """
 Door Lock Controller Module
 시리얼 통신을 통해 잠금장치를 제어하는 모듈
+- Windows: ctypes로 Windows API 직접 호출 (동기 I/O)
+- 기타 OS: pyserial 사용
 """
 import sys
-import serial
 import time
 from typing import Optional
 
-# Windows API 상수 및 구조체
 if sys.platform == 'win32':
     import ctypes
     import ctypes.wintypes as wintypes
 
-    EV_RXCHAR = 0x0001
-    WAIT_TIMEOUT = 0x00000102
-    ERROR_IO_PENDING = 997
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
 
-    class OVERLAPPED(ctypes.Structure):
+    # CreateFile 상수
+    GENERIC_READ = 0x80000000
+    GENERIC_WRITE = 0x40000000
+    OPEN_EXISTING = 3
+    INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+
+    # EscapeCommFunction 상수
+    SETRTS = 3
+    SETDTR = 5
+
+    # PurgeComm 상수
+    PURGE_RXCLEAR = 0x0008
+
+    # SetCommMask 상수
+    EV_RXCHAR = 0x0001
+
+    class DCB(ctypes.Structure):
         _fields_ = [
-            ('Internal', ctypes.POINTER(ctypes.c_ulong)),
-            ('InternalHigh', ctypes.POINTER(ctypes.c_ulong)),
-            ('Offset', wintypes.DWORD),
-            ('OffsetHigh', wintypes.DWORD),
-            ('hEvent', wintypes.HANDLE),
+            ('DCBlength', wintypes.DWORD),
+            ('BaudRate', wintypes.DWORD),
+            ('flags', wintypes.DWORD),
+            ('wReserved', wintypes.WORD),
+            ('XonLim', wintypes.WORD),
+            ('XoffLim', wintypes.WORD),
+            ('ByteSize', wintypes.BYTE),
+            ('Parity', wintypes.BYTE),
+            ('StopBits', wintypes.BYTE),
+            ('XonChar', ctypes.c_char),
+            ('XoffChar', ctypes.c_char),
+            ('ErrorChar', ctypes.c_char),
+            ('EofChar', ctypes.c_char),
+            ('EvtChar', ctypes.c_char),
+            ('wReserved1', wintypes.WORD),
         ]
 
-    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    class COMMTIMEOUTS(ctypes.Structure):
+        _fields_ = [
+            ('ReadIntervalTimeout', wintypes.DWORD),
+            ('ReadTotalTimeoutMultiplier', wintypes.DWORD),
+            ('ReadTotalTimeoutConstant', wintypes.DWORD),
+            ('WriteTotalTimeoutMultiplier', wintypes.DWORD),
+            ('WriteTotalTimeoutConstant', wintypes.DWORD),
+        ]
+else:
+    import serial
 
 
 class DoorLockController:
@@ -43,15 +76,99 @@ class DoorLockController:
         self.baudrate = baudrate
         self.timeout = timeout
         self.append_cr = append_cr
-        self.serial_conn: Optional[serial.Serial] = None
+        self._handle = None  # Windows 직접 핸들
+        self.serial_conn = None  # pyserial 폴백 (비Windows용)
 
     def connect(self) -> bool:
-        """
-        시리얼 포트에 연결
+        """시리얼 포트에 연결"""
+        if sys.platform == 'win32':
+            return self._connect_win32()
+        else:
+            return self._connect_pyserial()
 
-        Returns:
-            bool: 연결 성공 여부
-        """
+    def _connect_win32(self) -> bool:
+        """Windows: CreateFile로 포트 직접 열기 (동기 I/O)"""
+        try:
+            if self._handle is not None:
+                return True
+
+            port_name = f"\\\\.\\{self.port}"
+
+            # 동기 모드로 포트 열기 (FILE_FLAG_OVERLAPPED 없음)
+            handle = kernel32.CreateFileW(
+                port_name,
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                None,
+                OPEN_EXISTING,
+                0,  # 동기 I/O
+                None
+            )
+
+            if handle == INVALID_HANDLE_VALUE:
+                error = ctypes.get_last_error()
+                print(f"포트 열기 실패: {self.port} (error: {error})")
+                return False
+
+            self._handle = handle
+
+            # 통신 버퍼 설정
+            kernel32.SetupComm(self._handle, 4096, 4096)
+
+            # DCB 설정 (9600, 8N1, RTS/DTR 활성화)
+            dcb = DCB()
+            dcb.DCBlength = ctypes.sizeof(DCB)
+            kernel32.GetCommState(self._handle, ctypes.byref(dcb))
+
+            dcb.BaudRate = self.baudrate
+            dcb.ByteSize = 8
+            dcb.Parity = 0   # NOPARITY
+            dcb.StopBits = 0  # ONESTOPBIT
+
+            # flags 비트 설정
+            # bit 0: fBinary=1
+            # bit 2: fOutxCtsFlow=0
+            # bit 4-5: fDtrControl=01 (DTR_CONTROL_ENABLE)
+            # bit 12-13: fRtsControl=01 (RTS_CONTROL_ENABLE)
+            dcb.flags = dcb.flags | 0x0001                   # fBinary
+            dcb.flags = dcb.flags & ~(1 << 2)                # fOutxCtsFlow = 0
+            dcb.flags = dcb.flags & ~(1 << 3)                # fOutxDsrFlow = 0
+            dcb.flags = (dcb.flags & ~(0x3 << 4)) | (1 << 4)    # fDtrControl = ENABLE
+            dcb.flags = dcb.flags & ~(1 << 8)                # fOutX = 0
+            dcb.flags = dcb.flags & ~(1 << 9)                # fInX = 0
+            dcb.flags = (dcb.flags & ~(0x3 << 12)) | (1 << 12)  # fRtsControl = ENABLE
+            dcb.flags = dcb.flags & ~(1 << 14)               # fAbortOnError = 0
+
+            if not kernel32.SetCommState(self._handle, ctypes.byref(dcb)):
+                error = ctypes.get_last_error()
+                print(f"SetCommState 실패 (error: {error})")
+
+            # 타임아웃 설정
+            timeouts = COMMTIMEOUTS()
+            timeouts.ReadIntervalTimeout = 50
+            timeouts.ReadTotalTimeoutMultiplier = 10
+            timeouts.ReadTotalTimeoutConstant = int(self.timeout * 1000)
+            timeouts.WriteTotalTimeoutMultiplier = 10
+            timeouts.WriteTotalTimeoutConstant = 5000
+            kernel32.SetCommTimeouts(self._handle, ctypes.byref(timeouts))
+
+            # CommMask 설정 (제조사 프로그램과 동일)
+            kernel32.SetCommMask(self._handle, EV_RXCHAR)
+
+            # RTS/DTR 수동 활성화
+            kernel32.EscapeCommFunction(self._handle, SETRTS)
+            kernel32.EscapeCommFunction(self._handle, SETDTR)
+
+            time.sleep(0.2)
+            print(f"포트 연결 완료: {self.port} (ctypes 동기 I/O)")
+            return True
+
+        except Exception as e:
+            print(f"연결 실패: {e}")
+            return False
+
+    def _connect_pyserial(self) -> bool:
+        """비Windows: pyserial로 연결"""
         try:
             if self.serial_conn and self.serial_conn.is_open:
                 return True
@@ -63,130 +180,18 @@ class DoorLockController:
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=self.timeout,
-                rtscts=False,  # 자동 흐름 제어 비활성화 (수동 RTS 제어)
-                dsrdtr=False  # DTR/DSR 비활성화
             )
-            # RTS 신호 수동 활성화 (항상 High 유지)
-            self.serial_conn.rts = True
-            self.serial_conn.dtr = True
-            time.sleep(0.2)  # 연결 안정화 대기
-
-            # CommMask 설정: EV_RXCHAR (제조사 프로그램과 동일)
-            # pyserial은 기본적으로 EV_ERR만 설정하므로, EV_RXCHAR로 재설정
-            self._set_comm_mask()
-
+            time.sleep(0.2)
             return True
         except Exception as e:
             print(f"연결 실패: {e}")
             return False
 
-    def _set_comm_mask(self):
-        """Windows: SetCommMask(EV_RXCHAR) 호출"""
-        if sys.platform == 'win32':
-            try:
-                handle = self.serial_conn._port_handle
-                kernel32.SetCommMask(handle, EV_RXCHAR)
-                print("CommMask 설정 완료: EV_RXCHAR")
-            except Exception as e:
-                print(f"CommMask 설정 실패: {e}")
-
-    def _start_wait_comm_event(self) -> Optional[dict]:
-        """
-        WaitCommEvent를 비동기로 시작 (write 전에 호출)
-        제조사 프로그램과 동일하게 먼저 대기를 걸어놓는 방식
-
-        Returns:
-            dict: overlapped 핸들 정보 (finish에서 사용) / None: 실패 또는 비Windows
-        """
-        if sys.platform != 'win32':
-            return None
-
-        try:
-            handle = self.serial_conn._port_handle
-            mask = wintypes.DWORD(0)
-
-            overlapped = OVERLAPPED()
-            overlapped.hEvent = kernel32.CreateEventW(None, True, False, None)
-
-            # SetCommMask + WaitCommEvent → WAIT_ON_MASK 비동기 시작
-            kernel32.SetCommMask(handle, EV_RXCHAR)
-            result = kernel32.WaitCommEvent(
-                handle, ctypes.byref(mask), ctypes.byref(overlapped)
-            )
-
-            if result:
-                # 즉시 완료 (이미 데이터가 있는 경우)
-                print(f"EV_RXCHAR 이벤트 수신 (즉시)")
-                kernel32.CloseHandle(overlapped.hEvent)
-                return {'completed': True, 'has_data': bool(mask.value & EV_RXCHAR)}
-
-            error = ctypes.get_last_error()
-            if error == ERROR_IO_PENDING:
-                # 비동기 대기 중 - 핸들 반환
-                return {
-                    'completed': False,
-                    'overlapped': overlapped,
-                    'mask': mask,
-                    'handle': handle,
-                }
-            else:
-                print(f"WaitCommEvent 시작 실패 (error: {error})")
-                kernel32.CloseHandle(overlapped.hEvent)
-                return None
-
-        except Exception as e:
-            print(f"WaitCommEvent 시작 예외: {e}")
-            return None
-
-    def _finish_wait_comm_event(self, wait_handle: Optional[dict], timeout_ms: int = 1000) -> bool:
-        """
-        비동기 WaitCommEvent 결과 확인 (write 후에 호출)
-
-        Args:
-            wait_handle: _start_wait_comm_event에서 반환된 핸들
-            timeout_ms: 대기 타임아웃 (밀리초)
-
-        Returns:
-            bool: 이벤트 수신 여부
-        """
-        if wait_handle is None:
-            time.sleep(timeout_ms / 1000)
-            return False
-
-        if wait_handle.get('completed'):
-            return wait_handle.get('has_data', False)
-
-        try:
-            overlapped = wait_handle['overlapped']
-            mask = wait_handle['mask']
-            handle = wait_handle['handle']
-
-            wait_result = kernel32.WaitForSingleObject(overlapped.hEvent, timeout_ms)
-            if wait_result == WAIT_TIMEOUT:
-                print("WaitCommEvent 타임아웃")
-                kernel32.CancelIo(handle)
-                kernel32.CloseHandle(overlapped.hEvent)
-                return False
-
-            # 완료 확인
-            bytes_transferred = wintypes.DWORD(0)
-            kernel32.GetOverlappedResult(
-                handle, ctypes.byref(overlapped),
-                ctypes.byref(bytes_transferred), False
-            )
-            kernel32.CloseHandle(overlapped.hEvent)
-
-            if mask.value & EV_RXCHAR:
-                print(f"EV_RXCHAR 이벤트 수신")
-                return True
-
-            return False
-        except Exception as e:
-            print(f"WaitCommEvent 완료 예외: {e}")
-            return False
-
     def disconnect(self):
         """시리얼 포트 연결 해제"""
+        if self._handle is not None:
+            kernel32.CloseHandle(self._handle)
+            self._handle = None
         if self.serial_conn and self.serial_conn.is_open:
             self.serial_conn.close()
 
@@ -201,119 +206,123 @@ class DoorLockController:
             bool: 전송 성공 여부
         """
         try:
-            if not self.serial_conn or not self.serial_conn.is_open:
-                if not self.connect():
-                    return False
+            if not self.connect():
+                return False
 
-            # CR(Carriage Return) 추가 옵션 처리
             if self.append_cr:
-                command = command + bytes([0x0D])  # CR 추가
+                command = command + bytes([0x0D])
 
-            # 1) WaitCommEvent를 먼저 걸어놓기 (제조사 프로그램과 동일한 순서)
-            wait_handle = self._start_wait_comm_event()
-
-            # 2) ctypes WriteFile로 직접 전송 (pyserial 우회)
             if sys.platform == 'win32':
-                handle = self.serial_conn._port_handle
-                bytes_written = wintypes.DWORD(0)
-                write_overlapped = OVERLAPPED()
-                write_overlapped.hEvent = kernel32.CreateEventW(None, True, False, None)
-
-                # bytes → c_char 배열로 변환 (ctypes 버퍼 전달 보장)
-                buf = (ctypes.c_char * len(command))(*command)
-
-                result = kernel32.WriteFile(
-                    handle, buf, len(command),
-                    ctypes.byref(bytes_written), ctypes.byref(write_overlapped)
-                )
-
-                error = ctypes.get_last_error()
-                if not result and error == ERROR_IO_PENDING:
-                    # 비동기 쓰기 완료 대기
-                    kernel32.WaitForSingleObject(write_overlapped.hEvent, 5000)
-                    kernel32.GetOverlappedResult(
-                        handle, ctypes.byref(write_overlapped),
-                        ctypes.byref(bytes_written), True
-                    )
-                elif not result:
-                    print(f"WriteFile 실패 (error: {error})")
-
-                kernel32.CloseHandle(write_overlapped.hEvent)
-                print(f"명령 전송: {command.hex()} (WriteFile: {bytes_written.value} bytes)")
+                return self._send_command_win32(command)
             else:
-                self.serial_conn.write(command)
-                self.serial_conn.flush()
-                print(f"명령 전송: {command.hex()} (길이: {len(command)} bytes)")
+                return self._send_command_pyserial(command)
 
-            # 3) WaitCommEvent 결과 확인
-            if self._finish_wait_comm_event(wait_handle, timeout_ms=int(self.timeout * 1000)):
-                # 이벤트 수신됨 - 데이터 읽기
-                if self.serial_conn.in_waiting > 0:
-                    response = self.serial_conn.read(self.serial_conn.in_waiting)
-                    print(f"응답 수신: {response.hex()}")
-            else:
-                print("응답 없음 (타임아웃)")
-
-            return True
         except Exception as e:
             print(f"명령 전송 실패: {e}")
             return False
 
+    def _send_command_win32(self, command: bytes) -> bool:
+        """Windows: 동기 WriteFile + ReadFile"""
+        # 수신 버퍼 클리어
+        kernel32.PurgeComm(self._handle, PURGE_RXCLEAR)
+
+        # 동기 WriteFile (OVERLAPPED 없음 → 완료까지 블로킹)
+        bytes_written = wintypes.DWORD(0)
+        buf = (ctypes.c_char * len(command))(*command)
+
+        result = kernel32.WriteFile(
+            self._handle, buf, len(command),
+            ctypes.byref(bytes_written), None  # None = 동기
+        )
+
+        if not result:
+            error = ctypes.get_last_error()
+            print(f"WriteFile 실패 (error: {error})")
+            return False
+
+        print(f"명령 전송: {command.hex()} (WriteFile: {bytes_written.value} bytes)")
+
+        # 동기 ReadFile (COMMTIMEOUTS에 의해 타임아웃 처리)
+        read_buf = (ctypes.c_char * 64)()
+        bytes_read = wintypes.DWORD(0)
+
+        result = kernel32.ReadFile(
+            self._handle, read_buf, 64,
+            ctypes.byref(bytes_read), None  # None = 동기
+        )
+
+        if result and bytes_read.value > 0:
+            response = bytes(read_buf[:bytes_read.value])
+            print(f"응답 수신: {response.hex()}")
+        else:
+            print("응답 없음 (타임아웃)")
+
+        return True
+
+    def _send_command_pyserial(self, command: bytes) -> bool:
+        """비Windows: pyserial로 전송"""
+        self.serial_conn.reset_input_buffer()
+        self.serial_conn.write(command)
+        self.serial_conn.flush()
+
+        print(f"명령 전송: {command.hex()} (길이: {len(command)} bytes)")
+
+        time.sleep(0.15)
+        if self.serial_conn.in_waiting > 0:
+            response = self.serial_conn.read(self.serial_conn.in_waiting)
+            print(f"응답 수신: {response.hex()}")
+        else:
+            print("응답 없음 (타임아웃)")
+
+        return True
+
     def open_lock(self, device_id: int = 1) -> bool:
-        """
-        잠금장치 열기
-
-        Args:
-            device_id: 장치 ID (기본값: 1)
-
-        Returns:
-            bool: 명령 전송 성공 여부
-        """
-        # OPEN 명령: 0x01 0x00 0x00 0x00
+        """잠금장치 열기"""
         command = bytes([0x01, 0x00, 0x00, 0x00])
         return self.send_command(command)
 
     def close_lock(self) -> bool:
-        """
-        잠금장치 닫기
-
-        Returns:
-            bool: 명령 전송 성공 여부
-        """
-        # CLOSE 명령: 0x00 0x00 0x00 0x00
+        """잠금장치 닫기"""
         command = bytes([0x00, 0x00, 0x00, 0x00])
         return self.send_command(command)
 
     def read_status(self) -> Optional[dict]:
-        """
-        잠금장치 상태 읽기
-
-        Returns:
-            dict: 상태 정보 (status: 'open' | 'closed', raw_data: bytes)
-            None: 읽기 실패
-        """
+        """잠금장치 상태 읽기"""
         try:
-            if not self.serial_conn or not self.serial_conn.is_open:
-                if not self.connect():
-                    return None
+            if not self.connect():
+                return None
 
-            # 수신 버퍼 비우기
-            self.serial_conn.reset_input_buffer()
+            if sys.platform == 'win32':
+                kernel32.PurgeComm(self._handle, PURGE_RXCLEAR)
 
-            # WaitCommEvent로 데이터 수신 대기
-            if self._wait_comm_event(timeout_ms=int(self.timeout * 1000)):
-                if self.serial_conn.in_waiting >= 5:
-                    data = self.serial_conn.read(self.serial_conn.in_waiting)
+                read_buf = (ctypes.c_char * 64)()
+                bytes_read = wintypes.DWORD(0)
 
-                    if len(data) >= 5:
-                        # 응답 형식: 0x01 0x30 0x30/0x31 0x10 0x03
-                        if data[0] == 0x01 and data[3] == 0x10 and data[4] == 0x03:
-                            status_code = data[1:3].decode('ascii')
-                            return {
-                                'status': 'open' if status_code == '00' else 'closed',
-                                'status_code': status_code,
-                                'raw_data': data.hex()
-                            }
+                result = kernel32.ReadFile(
+                    self._handle, read_buf, 5,
+                    ctypes.byref(bytes_read), None
+                )
+
+                if result and bytes_read.value >= 5:
+                    data = bytes(read_buf[:bytes_read.value])
+                    if data[0] == 0x01 and data[3] == 0x10 and data[4] == 0x03:
+                        status_code = data[1:3].decode('ascii')
+                        return {
+                            'status': 'open' if status_code == '00' else 'closed',
+                            'status_code': status_code,
+                            'raw_data': data.hex()
+                        }
+            else:
+                self.serial_conn.reset_input_buffer()
+                data = self.serial_conn.read(5)
+                if len(data) >= 5:
+                    if data[0] == 0x01 and data[3] == 0x10 and data[4] == 0x03:
+                        status_code = data[1:3].decode('ascii')
+                        return {
+                            'status': 'open' if status_code == '00' else 'closed',
+                            'status_code': status_code,
+                            'raw_data': data.hex()
+                        }
 
             return None
         except Exception as e:
@@ -321,27 +330,20 @@ class DoorLockController:
             return None
 
     def check_id(self) -> Optional[int]:
-        """
-        장치 ID 확인
-
-        Returns:
-            int: 장치 ID
-            None: 읽기 실패
-        """
+        """장치 ID 확인"""
         try:
-            if not self.serial_conn or not self.serial_conn.is_open:
-                if not self.connect():
-                    return None
+            if not self.connect():
+                return None
 
-            # ID 체크 명령 전송이 필요하다면 여기에 구현
-            # 현재는 응답만 읽는 방식으로 구현
+            if sys.platform == 'win32':
+                read_buf = (ctypes.c_char * 64)()
+                bytes_read = wintypes.DWORD(0)
+                kernel32.ReadFile(
+                    self._handle, read_buf, 10,
+                    ctypes.byref(bytes_read), None
+                )
 
-            if self._wait_comm_event(timeout_ms=int(self.timeout * 1000)):
-                data = self.serial_conn.read(self.serial_conn.in_waiting or 10)
-                # ID 응답 파싱 로직
-                # 예시: <SOH> 등이 포함된 응답에서 ID 추출
-
-            return 1  # 기본 ID
+            return 1
         except Exception as e:
             print(f"ID 확인 실패: {e}")
             return None
