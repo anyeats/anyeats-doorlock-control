@@ -300,6 +300,23 @@
             font-family: 'Courier New', monospace;
         }
 
+        .preset-btn {
+            padding: 6px 12px;
+            background: #e9ecef;
+            border: 1px solid #ced4da;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8em;
+            font-family: 'Courier New', monospace;
+            transition: all 0.2s;
+        }
+
+        .preset-btn:hover {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
         @media (max-width: 600px) {
             .button-group {
                 grid-template-columns: 1fr;
@@ -363,6 +380,29 @@
                 <button class="btn btn-status" onclick="readStatus()">📊 READ STATUS</button>
                 <button class="btn btn-id" onclick="checkId()">🆔 ID CHECK</button>
                 <button class="btn btn-test" onclick="connectionTest()">🔌 연결 테스트</button>
+            </div>
+        </div>
+
+        <!-- Raw Hex 전송 섹션 -->
+        <div class="settings-section">
+            <div class="settings-title">🔧 커스텀 Hex 전송 (프로토콜 실험)</div>
+            <div class="port-input-group">
+                <input type="text" class="port-input" id="hex-input"
+                       placeholder="01 00 00 00 0D" style="flex: 2;">
+                <button class="btn-set-port" onclick="sendRawHex()">전송</button>
+            </div>
+            <div style="margin-top: 10px; color: #888; font-size: 0.85em;">
+                예시: 01 00 00 00 | 01 30 31 10 03 | 02 01 03
+            </div>
+            <div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
+                <button class="preset-btn" onclick="setHexPreset('01 00 00 00')">Open (기존)</button>
+                <button class="preset-btn" onclick="setHexPreset('00 00 00 00')">Close (기존)</button>
+                <button class="preset-btn" onclick="setHexPreset('01 00 00 00 0D')">Open+CR</button>
+                <button class="preset-btn" onclick="setHexPreset('00 00 00 00 0D')">Close+CR</button>
+                <button class="preset-btn" onclick="setHexPreset('01 30 31 10 03')">SOH+01+DLE+ETX</button>
+                <button class="preset-btn" onclick="setHexPreset('01 30 30 10 03')">SOH+00+DLE+ETX</button>
+                <button class="preset-btn" onclick="setHexPreset('02 30 31 03')">STX+01+ETX</button>
+                <button class="preset-btn" onclick="setHexPreset('02 30 30 03')">STX+00+ETX</button>
             </div>
         </div>
 
@@ -578,6 +618,43 @@
                 addLog(`✗ 오류: ${error.message}`, 'error');
                 // 오류 시 토글 상태 되돌리기
                 crToggle.checked = !appendCR;
+            }
+        }
+
+        function setHexPreset(hex) {
+            document.getElementById('hex-input').value = hex;
+        }
+
+        async function sendRawHex() {
+            const hexInput = document.getElementById('hex-input');
+            const hex = hexInput.value.trim();
+
+            if (!hex) {
+                addLog('✗ Hex 값을 입력하세요.', 'error');
+                return;
+            }
+
+            addLog(`🔧 Raw Hex 전송: ${hex}`, 'info');
+
+            try {
+                const response = await fetch('/api/send-raw', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ hex: hex })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    addLog(`✓ ${data.message}`, 'success');
+                    showStatus(data);
+                } else {
+                    addLog(`✗ ${data.message}`, 'error');
+                }
+            } catch (error) {
+                addLog(`✗ 오류: ${error.message}`, 'error');
             }
         }
 

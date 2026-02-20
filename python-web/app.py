@@ -253,6 +253,47 @@ def toggle_cr():
         }), 500
 
 
+@app.route('/api/send-raw', methods=['POST'])
+def send_raw():
+    """Raw hex 전송 API (프로토콜 실험용)"""
+    try:
+        ctrl = get_controller()
+        data = request.get_json()
+        hex_string = data.get('hex', '')
+
+        if not hex_string:
+            return jsonify({
+                'success': False,
+                'message': 'hex 값을 입력해주세요.'
+            }), 400
+
+        print(f"\n{'='*60}")
+        print(f"[RAW] Hex 전송: {hex_string}")
+        print(f"포트: {ctrl.port}, Baud: {ctrl.baudrate}")
+        print(f"{'='*60}\n")
+
+        success = ctrl.send_raw(hex_string)
+
+        if success:
+            return jsonify({
+                'success': True,
+                'message': f'전송 완료: {hex_string}',
+                'hex': hex_string
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': '전송 실패'
+            }), 500
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f'오류 발생: {str(e)}',
+            'traceback': traceback.format_exc()
+        }), 500
+
+
 @app.route('/api/get-settings', methods=['GET'])
 def get_settings():
     """현재 설정 조회 API"""

@@ -505,6 +505,35 @@ class DoorLockController:
 
         return True
 
+    def send_raw(self, hex_string: str) -> bool:
+        """
+        Raw hex 문자열을 직접 전송 (프로토콜 실험용)
+        CR 추가 없이 입력된 hex 그대로 전송
+
+        Args:
+            hex_string: 공백 구분 hex 문자열 (예: "01 00 00 00 0D")
+        """
+        try:
+            if not self.connect():
+                return False
+
+            hex_clean = hex_string.replace(' ', '').replace('0x', '').replace(',', '')
+            command = bytes.fromhex(hex_clean)
+
+            print(f"[RAW] 전송: {command.hex()} ({len(command)} bytes)")
+
+            if sys.platform == 'win32':
+                return self._send_command_win32(command)
+            else:
+                return self._send_command_pyserial(command)
+
+        except ValueError as e:
+            print(f"Hex 파싱 실패: {e}")
+            return False
+        except Exception as e:
+            print(f"Raw 전송 실패: {e}")
+            return False
+
     def open_lock(self, device_id: int = 1) -> bool:
         """잠금장치 열기"""
         command = bytes([0x01, 0x00, 0x00, 0x00])
