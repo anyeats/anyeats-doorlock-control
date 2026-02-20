@@ -1,8 +1,2 @@
-
-import 'anyeats_door_lock_platform_interface.dart';
-
-class AnyeatsDoorLock {
-  Future<String?> getPlatformVersion() {
-    return AnyeatsDoorLockPlatform.instance.getPlatformVersion();
-  }
-}
+export 'src/door_lock_controller.dart';
+export 'src/door_lock_protocol.dart' show DoorLockProtocol, DoorLockResponse;
