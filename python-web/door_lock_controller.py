@@ -2,9 +2,30 @@
 Door Lock Controller Module
 시리얼 통신을 통해 잠금장치를 제어하는 모듈
 """
+import sys
 import serial
 import time
 from typing import Optional
+
+# Windows API 상수 및 구조체
+if sys.platform == 'win32':
+    import ctypes
+    import ctypes.wintypes as wintypes
+
+    EV_RXCHAR = 0x0001
+    WAIT_TIMEOUT = 0x00000102
+    ERROR_IO_PENDING = 997
+
+    class OVERLAPPED(ctypes.Structure):
+        _fields_ = [
+            ('Internal', ctypes.POINTER(ctypes.c_ulong)),
+            ('InternalHigh', ctypes.POINTER(ctypes.c_ulong)),
+            ('Offset', wintypes.DWORD),
+            ('OffsetHigh', wintypes.DWORD),
+            ('hEvent', wintypes.HANDLE),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
 
 
 class DoorLockController:
@@ -49,9 +70,91 @@ class DoorLockController:
             self.serial_conn.rts = True
             self.serial_conn.dtr = True
             time.sleep(0.2)  # 연결 안정화 대기
+
+            # CommMask 설정: EV_RXCHAR (제조사 프로그램과 동일)
+            # pyserial은 기본적으로 EV_ERR만 설정하므로, EV_RXCHAR로 재설정
+            self._set_comm_mask()
+
             return True
         except Exception as e:
             print(f"연결 실패: {e}")
+            return False
+
+    def _set_comm_mask(self):
+        """Windows: SetCommMask(EV_RXCHAR) 호출"""
+        if sys.platform == 'win32':
+            try:
+                handle = self.serial_conn._port_handle
+                kernel32.SetCommMask(handle, EV_RXCHAR)
+                print("CommMask 설정 완료: EV_RXCHAR")
+            except Exception as e:
+                print(f"CommMask 설정 실패: {e}")
+
+    def _wait_comm_event(self, timeout_ms: int = 1000) -> bool:
+        """
+        Windows: WaitCommEvent로 EV_RXCHAR 이벤트 대기
+        제조사 프로그램과 동일한 IOCTL_SERIAL_WAIT_ON_MASK 패턴 생성
+
+        Args:
+            timeout_ms: 대기 타임아웃 (밀리초)
+
+        Returns:
+            bool: 이벤트 수신 여부
+        """
+        if sys.platform != 'win32':
+            time.sleep(timeout_ms / 1000)
+            return False
+
+        try:
+            handle = self.serial_conn._port_handle
+            mask = wintypes.DWORD(0)
+
+            # Overlapped I/O용 이벤트 생성
+            overlapped = OVERLAPPED()
+            overlapped.hEvent = kernel32.CreateEventW(None, True, False, None)
+
+            # SetCommMask + WaitCommEvent → IOCTL_SERIAL_WAIT_ON_MASK 발생
+            kernel32.SetCommMask(handle, EV_RXCHAR)
+            result = kernel32.WaitCommEvent(
+                handle, ctypes.byref(mask), ctypes.byref(overlapped)
+            )
+
+            if result:
+                # 즉시 완료
+                kernel32.CloseHandle(overlapped.hEvent)
+                if mask.value & EV_RXCHAR:
+                    print(f"EV_RXCHAR 이벤트 수신 (즉시)")
+                    return True
+                return False
+
+            # 비동기 대기
+            error = ctypes.get_last_error() if hasattr(ctypes, 'get_last_error') else ctypes.GetLastError()
+            if error == ERROR_IO_PENDING:
+                wait_result = kernel32.WaitForSingleObject(overlapped.hEvent, timeout_ms)
+                if wait_result == WAIT_TIMEOUT:
+                    print("WaitCommEvent 타임아웃")
+                    kernel32.CancelIo(handle)
+                    kernel32.CloseHandle(overlapped.hEvent)
+                    return False
+
+                # 완료 확인
+                bytes_transferred = wintypes.DWORD(0)
+                kernel32.GetOverlappedResult(
+                    handle, ctypes.byref(overlapped),
+                    ctypes.byref(bytes_transferred), False
+                )
+                kernel32.CloseHandle(overlapped.hEvent)
+
+                if mask.value & EV_RXCHAR:
+                    print(f"EV_RXCHAR 이벤트 수신")
+                    return True
+            else:
+                print(f"WaitCommEvent 실패 (error: {error})")
+                kernel32.CloseHandle(overlapped.hEvent)
+
+            return False
+        except Exception as e:
+            print(f"WaitCommEvent 예외: {e}")
             return False
 
     def disconnect(self):
@@ -78,17 +181,25 @@ class DoorLockController:
             if self.append_cr:
                 command = command + bytes([0x0D])  # CR 추가
 
-            # 송신 버퍼 비우기
-            self.serial_conn.reset_output_buffer()
+            # 수신 버퍼 비우기
+            self.serial_conn.reset_input_buffer()
 
             # 명령어 전송
             self.serial_conn.write(command)
             self.serial_conn.flush()
 
-            # 명령 처리 대기
-            time.sleep(0.15)
-
             print(f"명령 전송: {command.hex()} (길이: {len(command)} bytes)")
+
+            # 응답 대기: WaitCommEvent로 EV_RXCHAR 이벤트 대기
+            # (제조사 프로그램과 동일한 WAIT_ON_MASK 패턴)
+            if self._wait_comm_event(timeout_ms=int(self.timeout * 1000)):
+                # 이벤트 수신됨 - 데이터 읽기
+                if self.serial_conn.in_waiting > 0:
+                    response = self.serial_conn.read(self.serial_conn.in_waiting)
+                    print(f"응답 수신: {response.hex()}")
+            else:
+                print("응답 없음 (타임아웃)")
+
             return True
         except Exception as e:
             print(f"명령 전송 실패: {e}")
@@ -135,20 +246,20 @@ class DoorLockController:
             # 수신 버퍼 비우기
             self.serial_conn.reset_input_buffer()
 
-            # 데이터 읽기 (최대 5바이트: SOH + 상태(2바이트) + DLE + ETX)
-            data = self.serial_conn.read(5)
+            # WaitCommEvent로 데이터 수신 대기
+            if self._wait_comm_event(timeout_ms=int(self.timeout * 1000)):
+                if self.serial_conn.in_waiting >= 5:
+                    data = self.serial_conn.read(self.serial_conn.in_waiting)
 
-            if len(data) >= 5:
-                # 응답 형식: 0x01 0x30 0x30/0x31 0x10 0x03
-                if data[0] == 0x01 and data[3] == 0x10 and data[4] == 0x03:
-                    # 상태 코드는 두 번째, 세 번째 바이트 ('00' 또는 '01')
-                    status_code = data[1:3].decode('ascii')
-
-                    return {
-                        'status': 'open' if status_code == '00' else 'closed',
-                        'status_code': status_code,
-                        'raw_data': data.hex()
-                    }
+                    if len(data) >= 5:
+                        # 응답 형식: 0x01 0x30 0x30/0x31 0x10 0x03
+                        if data[0] == 0x01 and data[3] == 0x10 and data[4] == 0x03:
+                            status_code = data[1:3].decode('ascii')
+                            return {
+                                'status': 'open' if status_code == '00' else 'closed',
+                                'status_code': status_code,
+                                'raw_data': data.hex()
+                            }
 
             return None
         except Exception as e:
@@ -171,10 +282,10 @@ class DoorLockController:
             # ID 체크 명령 전송이 필요하다면 여기에 구현
             # 현재는 응답만 읽는 방식으로 구현
 
-            data = self.serial_conn.read(10)
-
-            # ID 응답 파싱 로직
-            # 예시: <SOH> 등이 포함된 응답에서 ID 추출
+            if self._wait_comm_event(timeout_ms=int(self.timeout * 1000)):
+                data = self.serial_conn.read(self.serial_conn.in_waiting or 10)
+                # ID 응답 파싱 로직
+                # 예시: <SOH> 등이 포함된 응답에서 ID 추출
 
             return 1  # 기본 ID
         except Exception as e:
