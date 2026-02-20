@@ -1,7 +1,7 @@
 """
 Door Lock Controller Module
 시리얼 통신을 통해 잠금장치를 제어하는 모듈
-- Windows: ctypes로 Windows API 직접 호출 (동기 I/O)
+- Windows: ctypes로 Windows API 직접 호출 (Overlapped I/O + WaitCommEvent)
 - 기타 OS: pyserial 사용
 """
 import sys
@@ -18,6 +18,7 @@ if sys.platform == 'win32':
     GENERIC_READ = 0x80000000
     GENERIC_WRITE = 0x40000000
     OPEN_EXISTING = 3
+    FILE_FLAG_OVERLAPPED = 0x40000000
     INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
 
     # EscapeCommFunction 상수
@@ -29,6 +30,13 @@ if sys.platform == 'win32':
 
     # SetCommMask 상수
     EV_RXCHAR = 0x0001
+
+    # WaitForSingleObject 상수
+    WAIT_OBJECT_0 = 0x00000000
+    WAIT_TIMEOUT = 0x00000102
+
+    # Error codes
+    ERROR_IO_PENDING = 997
 
     class DCB(ctypes.Structure):
         _fields_ = [
@@ -57,6 +65,15 @@ if sys.platform == 'win32':
             ('WriteTotalTimeoutMultiplier', wintypes.DWORD),
             ('WriteTotalTimeoutConstant', wintypes.DWORD),
         ]
+
+    class OVERLAPPED(ctypes.Structure):
+        _fields_ = [
+            ('Internal', ctypes.c_void_p),
+            ('InternalHigh', ctypes.c_void_p),
+            ('Offset', wintypes.DWORD),
+            ('OffsetHigh', wintypes.DWORD),
+            ('hEvent', wintypes.HANDLE),
+        ]
 else:
     import serial
 
@@ -77,6 +94,9 @@ class DoorLockController:
         self.timeout = timeout
         self.append_cr = append_cr
         self._handle = None  # Windows 직접 핸들
+        self._write_event = None
+        self._read_event = None
+        self._wait_event = None
         self.serial_conn = None  # pyserial 폴백 (비Windows용)
 
     def connect(self) -> bool:
@@ -87,21 +107,21 @@ class DoorLockController:
             return self._connect_pyserial()
 
     def _connect_win32(self) -> bool:
-        """Windows: CreateFile로 포트 직접 열기 (동기 I/O)"""
+        """Windows: CreateFile + Overlapped I/O로 포트 열기"""
         try:
             if self._handle is not None:
                 return True
 
             port_name = f"\\\\.\\{self.port}"
 
-            # 동기 모드로 포트 열기 (FILE_FLAG_OVERLAPPED 없음)
+            # Overlapped 모드로 포트 열기 (제조사 프로그램과 동일한 비동기 I/O)
             handle = kernel32.CreateFileW(
                 port_name,
                 GENERIC_READ | GENERIC_WRITE,
                 0,
                 None,
                 OPEN_EXISTING,
-                0,  # 동기 I/O
+                FILE_FLAG_OVERLAPPED,
                 None
             )
 
@@ -111,6 +131,11 @@ class DoorLockController:
                 return False
 
             self._handle = handle
+
+            # 이벤트 객체 생성 (Manual Reset)
+            self._write_event = kernel32.CreateEventW(None, True, False, None)
+            self._read_event = kernel32.CreateEventW(None, True, False, None)
+            self._wait_event = kernel32.CreateEventW(None, True, False, None)
 
             # 통신 버퍼 설정
             kernel32.SetupComm(self._handle, 4096, 4096)
@@ -126,10 +151,6 @@ class DoorLockController:
             dcb.StopBits = 0  # ONESTOPBIT
 
             # flags 비트 설정
-            # bit 0: fBinary=1
-            # bit 2: fOutxCtsFlow=0
-            # bit 4-5: fDtrControl=01 (DTR_CONTROL_ENABLE)
-            # bit 12-13: fRtsControl=01 (RTS_CONTROL_ENABLE)
             dcb.flags = dcb.flags | 0x0001                   # fBinary
             dcb.flags = dcb.flags & ~(1 << 2)                # fOutxCtsFlow = 0
             dcb.flags = dcb.flags & ~(1 << 3)                # fOutxDsrFlow = 0
@@ -152,7 +173,7 @@ class DoorLockController:
             timeouts.WriteTotalTimeoutConstant = 5000
             kernel32.SetCommTimeouts(self._handle, ctypes.byref(timeouts))
 
-            # CommMask 설정 (제조사 프로그램과 동일)
+            # CommMask 설정 (제조사 프로그램과 동일: EV_RXCHAR)
             kernel32.SetCommMask(self._handle, EV_RXCHAR)
 
             # RTS/DTR 수동 활성화
@@ -160,7 +181,7 @@ class DoorLockController:
             kernel32.EscapeCommFunction(self._handle, SETDTR)
 
             time.sleep(0.2)
-            print(f"포트 연결 완료: {self.port} (ctypes 동기 I/O)")
+            print(f"포트 연결 완료: {self.port} (ctypes Overlapped I/O)")
             return True
 
         except Exception as e:
@@ -192,6 +213,15 @@ class DoorLockController:
         if self._handle is not None:
             kernel32.CloseHandle(self._handle)
             self._handle = None
+        if self._write_event is not None:
+            kernel32.CloseHandle(self._write_event)
+            self._write_event = None
+        if self._read_event is not None:
+            kernel32.CloseHandle(self._read_event)
+            self._read_event = None
+        if self._wait_event is not None:
+            kernel32.CloseHandle(self._wait_event)
+            self._wait_event = None
         if self.serial_conn and self.serial_conn.is_open:
             self.serial_conn.close()
 
@@ -222,40 +252,111 @@ class DoorLockController:
             return False
 
     def _send_command_win32(self, command: bytes) -> bool:
-        """Windows: 동기 WriteFile + ReadFile"""
+        """Windows: Overlapped I/O WriteFile + WaitCommEvent + ReadFile"""
         # 수신 버퍼 클리어
         kernel32.PurgeComm(self._handle, PURGE_RXCLEAR)
 
-        # 동기 WriteFile (OVERLAPPED 없음 → 완료까지 블로킹)
+        # 1. WaitCommEvent 시작 (Overlapped - Write 전에 비동기로 대기 시작)
+        evt_mask = wintypes.DWORD(0)
+        ov_wait = OVERLAPPED()
+        ctypes.memset(ctypes.byref(ov_wait), 0, ctypes.sizeof(OVERLAPPED))
+        ov_wait.hEvent = self._wait_event
+        kernel32.ResetEvent(self._wait_event)
+
+        wait_started = True
+        result = kernel32.WaitCommEvent(
+            self._handle, ctypes.byref(evt_mask), ctypes.byref(ov_wait)
+        )
+        if not result:
+            err = ctypes.get_last_error()
+            if err != ERROR_IO_PENDING:
+                print(f"WaitCommEvent 시작 실패 (error: {err})")
+                wait_started = False
+            # ERROR_IO_PENDING = 정상 (비동기 대기 중)
+
+        # 2. Overlapped WriteFile
         bytes_written = wintypes.DWORD(0)
         buf = (ctypes.c_char * len(command))(*command)
+        ov_write = OVERLAPPED()
+        ctypes.memset(ctypes.byref(ov_write), 0, ctypes.sizeof(OVERLAPPED))
+        ov_write.hEvent = self._write_event
+        kernel32.ResetEvent(self._write_event)
 
         result = kernel32.WriteFile(
             self._handle, buf, len(command),
-            ctypes.byref(bytes_written), None  # None = 동기
+            ctypes.byref(bytes_written), ctypes.byref(ov_write)
         )
-
         if not result:
-            error = ctypes.get_last_error()
-            print(f"WriteFile 실패 (error: {error})")
-            return False
+            err = ctypes.get_last_error()
+            if err == ERROR_IO_PENDING:
+                # Write 완료 대기
+                wr = kernel32.WaitForSingleObject(self._write_event, 5000)
+                if wr != WAIT_OBJECT_0:
+                    print("WriteFile 타임아웃")
+                    return False
+                kernel32.GetOverlappedResult(
+                    self._handle, ctypes.byref(ov_write),
+                    ctypes.byref(bytes_written), False
+                )
+            else:
+                print(f"WriteFile 실패 (error: {err})")
+                return False
 
         print(f"명령 전송: {command.hex()} (WriteFile: {bytes_written.value} bytes)")
 
-        # 동기 ReadFile (COMMTIMEOUTS에 의해 타임아웃 처리)
-        read_buf = (ctypes.c_char * 64)()
-        bytes_read = wintypes.DWORD(0)
+        # 3. FlushFileBuffers - 데이터가 실제로 wire로 전송되도록 보장
+        kernel32.FlushFileBuffers(self._handle)
 
-        result = kernel32.ReadFile(
-            self._handle, read_buf, 64,
-            ctypes.byref(bytes_read), None  # None = 동기
-        )
+        # 4. WaitCommEvent 완료 대기 (device 응답)
+        if wait_started:
+            wr = kernel32.WaitForSingleObject(
+                self._wait_event, int(self.timeout * 1000)
+            )
 
-        if result and bytes_read.value > 0:
-            response = bytes(read_buf[:bytes_read.value])
-            print(f"응답 수신: {response.hex()}")
+            if wr == WAIT_OBJECT_0:
+                transferred = wintypes.DWORD(0)
+                kernel32.GetOverlappedResult(
+                    self._handle, ctypes.byref(ov_wait),
+                    ctypes.byref(transferred), False
+                )
+                print(f"WaitCommEvent 완료: evt_mask={evt_mask.value}")
+
+                if evt_mask.value & EV_RXCHAR:
+                    # 5. Overlapped ReadFile
+                    read_buf = (ctypes.c_char * 64)()
+                    bytes_read = wintypes.DWORD(0)
+                    ov_read = OVERLAPPED()
+                    ctypes.memset(ctypes.byref(ov_read), 0, ctypes.sizeof(OVERLAPPED))
+                    ov_read.hEvent = self._read_event
+                    kernel32.ResetEvent(self._read_event)
+
+                    result = kernel32.ReadFile(
+                        self._handle, read_buf, 64,
+                        ctypes.byref(bytes_read), ctypes.byref(ov_read)
+                    )
+                    if not result:
+                        err = ctypes.get_last_error()
+                        if err == ERROR_IO_PENDING:
+                            kernel32.WaitForSingleObject(self._read_event, 1000)
+                            kernel32.GetOverlappedResult(
+                                self._handle, ctypes.byref(ov_read),
+                                ctypes.byref(bytes_read), False
+                            )
+
+                    if bytes_read.value > 0:
+                        response = bytes(read_buf[:bytes_read.value])
+                        print(f"응답 수신: {response.hex()}")
+                    else:
+                        print("응답 데이터 없음")
+            elif wr == WAIT_TIMEOUT:
+                print("WaitCommEvent 타임아웃")
+                # 타임아웃 시 pending WaitCommEvent 취소
+                kernel32.CancelIo(self._handle)
+            else:
+                print(f"WaitCommEvent 대기 실패: {wr}")
+                kernel32.CancelIo(self._handle)
         else:
-            print("응답 없음 (타임아웃)")
+            print("WaitCommEvent 없이 응답 대기 불가")
 
         return True
 
@@ -295,15 +396,30 @@ class DoorLockController:
             if sys.platform == 'win32':
                 kernel32.PurgeComm(self._handle, PURGE_RXCLEAR)
 
+                # Overlapped ReadFile
                 read_buf = (ctypes.c_char * 64)()
                 bytes_read = wintypes.DWORD(0)
+                ov_read = OVERLAPPED()
+                ctypes.memset(ctypes.byref(ov_read), 0, ctypes.sizeof(OVERLAPPED))
+                ov_read.hEvent = self._read_event
+                kernel32.ResetEvent(self._read_event)
 
                 result = kernel32.ReadFile(
                     self._handle, read_buf, 5,
-                    ctypes.byref(bytes_read), None
+                    ctypes.byref(bytes_read), ctypes.byref(ov_read)
                 )
+                if not result:
+                    err = ctypes.get_last_error()
+                    if err == ERROR_IO_PENDING:
+                        kernel32.WaitForSingleObject(
+                            self._read_event, int(self.timeout * 1000)
+                        )
+                        kernel32.GetOverlappedResult(
+                            self._handle, ctypes.byref(ov_read),
+                            ctypes.byref(bytes_read), False
+                        )
 
-                if result and bytes_read.value >= 5:
+                if bytes_read.value >= 5:
                     data = bytes(read_buf[:bytes_read.value])
                     if data[0] == 0x01 and data[3] == 0x10 and data[4] == 0x03:
                         status_code = data[1:3].decode('ascii')
@@ -338,9 +454,14 @@ class DoorLockController:
             if sys.platform == 'win32':
                 read_buf = (ctypes.c_char * 64)()
                 bytes_read = wintypes.DWORD(0)
+                ov_read = OVERLAPPED()
+                ctypes.memset(ctypes.byref(ov_read), 0, ctypes.sizeof(OVERLAPPED))
+                ov_read.hEvent = self._read_event
+                kernel32.ResetEvent(self._read_event)
+
                 kernel32.ReadFile(
                     self._handle, read_buf, 10,
-                    ctypes.byref(bytes_read), None
+                    ctypes.byref(bytes_read), ctypes.byref(ov_read)
                 )
 
             return 1
