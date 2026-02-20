@@ -90,71 +90,99 @@ class DoorLockController:
             except Exception as e:
                 print(f"CommMask 설정 실패: {e}")
 
-    def _wait_comm_event(self, timeout_ms: int = 1000) -> bool:
+    def _start_wait_comm_event(self) -> Optional[dict]:
         """
-        Windows: WaitCommEvent로 EV_RXCHAR 이벤트 대기
-        제조사 프로그램과 동일한 IOCTL_SERIAL_WAIT_ON_MASK 패턴 생성
-
-        Args:
-            timeout_ms: 대기 타임아웃 (밀리초)
+        WaitCommEvent를 비동기로 시작 (write 전에 호출)
+        제조사 프로그램과 동일하게 먼저 대기를 걸어놓는 방식
 
         Returns:
-            bool: 이벤트 수신 여부
+            dict: overlapped 핸들 정보 (finish에서 사용) / None: 실패 또는 비Windows
         """
         if sys.platform != 'win32':
-            time.sleep(timeout_ms / 1000)
-            return False
+            return None
 
         try:
             handle = self.serial_conn._port_handle
             mask = wintypes.DWORD(0)
 
-            # Overlapped I/O용 이벤트 생성
             overlapped = OVERLAPPED()
             overlapped.hEvent = kernel32.CreateEventW(None, True, False, None)
 
-            # SetCommMask + WaitCommEvent → IOCTL_SERIAL_WAIT_ON_MASK 발생
+            # SetCommMask + WaitCommEvent → WAIT_ON_MASK 비동기 시작
             kernel32.SetCommMask(handle, EV_RXCHAR)
             result = kernel32.WaitCommEvent(
                 handle, ctypes.byref(mask), ctypes.byref(overlapped)
             )
 
             if result:
-                # 즉시 완료
+                # 즉시 완료 (이미 데이터가 있는 경우)
+                print(f"EV_RXCHAR 이벤트 수신 (즉시)")
                 kernel32.CloseHandle(overlapped.hEvent)
-                if mask.value & EV_RXCHAR:
-                    print(f"EV_RXCHAR 이벤트 수신 (즉시)")
-                    return True
-                return False
+                return {'completed': True, 'has_data': bool(mask.value & EV_RXCHAR)}
 
-            # 비동기 대기
             error = ctypes.get_last_error() if hasattr(ctypes, 'get_last_error') else ctypes.GetLastError()
             if error == ERROR_IO_PENDING:
-                wait_result = kernel32.WaitForSingleObject(overlapped.hEvent, timeout_ms)
-                if wait_result == WAIT_TIMEOUT:
-                    print("WaitCommEvent 타임아웃")
-                    kernel32.CancelIo(handle)
-                    kernel32.CloseHandle(overlapped.hEvent)
-                    return False
-
-                # 완료 확인
-                bytes_transferred = wintypes.DWORD(0)
-                kernel32.GetOverlappedResult(
-                    handle, ctypes.byref(overlapped),
-                    ctypes.byref(bytes_transferred), False
-                )
-                kernel32.CloseHandle(overlapped.hEvent)
-
-                if mask.value & EV_RXCHAR:
-                    print(f"EV_RXCHAR 이벤트 수신")
-                    return True
+                # 비동기 대기 중 - 핸들 반환
+                return {
+                    'completed': False,
+                    'overlapped': overlapped,
+                    'mask': mask,
+                    'handle': handle,
+                }
             else:
-                print(f"WaitCommEvent 실패 (error: {error})")
+                print(f"WaitCommEvent 시작 실패 (error: {error})")
                 kernel32.CloseHandle(overlapped.hEvent)
+                return None
+
+        except Exception as e:
+            print(f"WaitCommEvent 시작 예외: {e}")
+            return None
+
+    def _finish_wait_comm_event(self, wait_handle: Optional[dict], timeout_ms: int = 1000) -> bool:
+        """
+        비동기 WaitCommEvent 결과 확인 (write 후에 호출)
+
+        Args:
+            wait_handle: _start_wait_comm_event에서 반환된 핸들
+            timeout_ms: 대기 타임아웃 (밀리초)
+
+        Returns:
+            bool: 이벤트 수신 여부
+        """
+        if wait_handle is None:
+            time.sleep(timeout_ms / 1000)
+            return False
+
+        if wait_handle.get('completed'):
+            return wait_handle.get('has_data', False)
+
+        try:
+            overlapped = wait_handle['overlapped']
+            mask = wait_handle['mask']
+            handle = wait_handle['handle']
+
+            wait_result = kernel32.WaitForSingleObject(overlapped.hEvent, timeout_ms)
+            if wait_result == WAIT_TIMEOUT:
+                print("WaitCommEvent 타임아웃")
+                kernel32.CancelIo(handle)
+                kernel32.CloseHandle(overlapped.hEvent)
+                return False
+
+            # 완료 확인
+            bytes_transferred = wintypes.DWORD(0)
+            kernel32.GetOverlappedResult(
+                handle, ctypes.byref(overlapped),
+                ctypes.byref(bytes_transferred), False
+            )
+            kernel32.CloseHandle(overlapped.hEvent)
+
+            if mask.value & EV_RXCHAR:
+                print(f"EV_RXCHAR 이벤트 수신")
+                return True
 
             return False
         except Exception as e:
-            print(f"WaitCommEvent 예외: {e}")
+            print(f"WaitCommEvent 완료 예외: {e}")
             return False
 
     def disconnect(self):
@@ -184,15 +212,18 @@ class DoorLockController:
             # 수신 버퍼 비우기
             self.serial_conn.reset_input_buffer()
 
-            # 명령어 전송
+            # 1) WaitCommEvent를 먼저 걸어놓기 (제조사 프로그램과 동일한 순서)
+            #    응답 수신 대기를 먼저 시작한 뒤 명령을 전송해야 응답을 놓치지 않음
+            wait_handle = self._start_wait_comm_event()
+
+            # 2) 명령어 전송
             self.serial_conn.write(command)
             self.serial_conn.flush()
 
             print(f"명령 전송: {command.hex()} (길이: {len(command)} bytes)")
 
-            # 응답 대기: WaitCommEvent로 EV_RXCHAR 이벤트 대기
-            # (제조사 프로그램과 동일한 WAIT_ON_MASK 패턴)
-            if self._wait_comm_event(timeout_ms=int(self.timeout * 1000)):
+            # 3) WaitCommEvent 결과 확인
+            if self._finish_wait_comm_event(wait_handle, timeout_ms=int(self.timeout * 1000)):
                 # 이벤트 수신됨 - 데이터 읽기
                 if self.serial_conn.in_waiting > 0:
                     response = self.serial_conn.read(self.serial_conn.in_waiting)
