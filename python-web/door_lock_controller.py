@@ -63,10 +63,10 @@ class DoorLockController:
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=self.timeout,
-                rtscts=True,  # RTS/CTS 하드웨어 흐름 제어 (RequestToSend)
+                rtscts=False,  # 자동 흐름 제어 비활성화 (수동 RTS 제어)
                 dsrdtr=False  # DTR/DSR 비활성화
             )
-            # RTS 신호 활성화
+            # RTS 신호 수동 활성화 (항상 High 유지)
             self.serial_conn.rts = True
             self.serial_conn.dtr = True
             time.sleep(0.2)  # 연결 안정화 대기
