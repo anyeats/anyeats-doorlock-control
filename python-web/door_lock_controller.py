@@ -23,9 +23,14 @@ if sys.platform == 'win32':
 
     # EscapeCommFunction 상수
     SETRTS = 3
+    CLRRTS = 4
     SETDTR = 5
+    CLRDTR = 6
 
     # PurgeComm 상수
+    PURGE_TXABORT = 0x0001
+    PURGE_RXABORT = 0x0002
+    PURGE_TXCLEAR = 0x0004
     PURGE_RXCLEAR = 0x0008
 
     # SetCommMask 상수
@@ -74,6 +79,89 @@ if sys.platform == 'win32':
             ('OffsetHigh', wintypes.DWORD),
             ('hEvent', wintypes.HANDLE),
         ]
+
+    class COMSTAT(ctypes.Structure):
+        _fields_ = [
+            ('flags', wintypes.DWORD),
+            ('cbInQue', wintypes.DWORD),
+            ('cbOutQue', wintypes.DWORD),
+        ]
+
+    # --- kernel32 함수 프로토타입 설정 (64비트 HANDLE 잘림 방지) ---
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+
+    kernel32.CreateEventW.argtypes = [
+        ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR
+    ]
+    kernel32.CreateEventW.restype = wintypes.HANDLE
+
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    kernel32.WriteFile.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p
+    ]
+    kernel32.WriteFile.restype = wintypes.BOOL
+
+    kernel32.ReadFile.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p
+    ]
+    kernel32.ReadFile.restype = wintypes.BOOL
+
+    kernel32.GetOverlappedResult.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p,
+        ctypes.POINTER(wintypes.DWORD), wintypes.BOOL
+    ]
+    kernel32.GetOverlappedResult.restype = wintypes.BOOL
+
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+
+    kernel32.ResetEvent.argtypes = [wintypes.HANDLE]
+    kernel32.ResetEvent.restype = wintypes.BOOL
+
+    kernel32.SetCommState.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    kernel32.SetCommState.restype = wintypes.BOOL
+
+    kernel32.GetCommState.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    kernel32.GetCommState.restype = wintypes.BOOL
+
+    kernel32.SetCommTimeouts.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    kernel32.SetCommTimeouts.restype = wintypes.BOOL
+
+    kernel32.SetCommMask.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.SetCommMask.restype = wintypes.BOOL
+
+    kernel32.WaitCommEvent.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p
+    ]
+    kernel32.WaitCommEvent.restype = wintypes.BOOL
+
+    kernel32.EscapeCommFunction.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.EscapeCommFunction.restype = wintypes.BOOL
+
+    kernel32.PurgeComm.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.PurgeComm.restype = wintypes.BOOL
+
+    kernel32.SetupComm.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD]
+    kernel32.SetupComm.restype = wintypes.BOOL
+
+    kernel32.ClearCommError.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p
+    ]
+    kernel32.ClearCommError.restype = wintypes.BOOL
+
+    kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+    kernel32.FlushFileBuffers.restype = wintypes.BOOL
+
+    kernel32.CancelIo.argtypes = [wintypes.HANDLE]
+    kernel32.CancelIo.restype = wintypes.BOOL
 else:
     import serial
 
@@ -114,7 +202,7 @@ class DoorLockController:
 
             port_name = f"\\\\.\\{self.port}"
 
-            # Overlapped 모드로 포트 열기 (제조사 프로그램과 동일한 비동기 I/O)
+            # Overlapped 모드로 포트 열기
             handle = kernel32.CreateFileW(
                 port_name,
                 GENERIC_READ | GENERIC_WRITE,
@@ -131,11 +219,22 @@ class DoorLockController:
                 return False
 
             self._handle = handle
+            print(f"포트 핸들: 0x{handle:X}")
 
             # 이벤트 객체 생성 (Manual Reset)
             self._write_event = kernel32.CreateEventW(None, True, False, None)
             self._read_event = kernel32.CreateEventW(None, True, False, None)
             self._wait_event = kernel32.CreateEventW(None, True, False, None)
+
+            # 기존 에러 클리어
+            errors = wintypes.DWORD(0)
+            comstat = COMSTAT()
+            kernel32.ClearCommError(self._handle, ctypes.byref(errors), ctypes.byref(comstat))
+            if errors.value:
+                print(f"초기 에러 클리어: {errors.value:#x}")
+
+            # 버퍼 초기화
+            kernel32.PurgeComm(self._handle, PURGE_TXABORT | PURGE_RXABORT | PURGE_TXCLEAR | PURGE_RXCLEAR)
 
             # 통신 버퍼 설정
             kernel32.SetupComm(self._handle, 4096, 4096)
@@ -164,6 +263,13 @@ class DoorLockController:
                 error = ctypes.get_last_error()
                 print(f"SetCommState 실패 (error: {error})")
 
+            # DCB 설정 검증
+            verify_dcb = DCB()
+            verify_dcb.DCBlength = ctypes.sizeof(DCB)
+            kernel32.GetCommState(self._handle, ctypes.byref(verify_dcb))
+            print(f"DCB 검증: BaudRate={verify_dcb.BaudRate}, ByteSize={verify_dcb.ByteSize}, "
+                  f"Parity={verify_dcb.Parity}, StopBits={verify_dcb.StopBits}, flags=0x{verify_dcb.flags:08X}")
+
             # 타임아웃 설정
             timeouts = COMMTIMEOUTS()
             timeouts.ReadIntervalTimeout = 50
@@ -186,6 +292,8 @@ class DoorLockController:
 
         except Exception as e:
             print(f"연결 실패: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def _connect_pyserial(self) -> bool:
@@ -249,10 +357,20 @@ class DoorLockController:
 
         except Exception as e:
             print(f"명령 전송 실패: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def _send_command_win32(self, command: bytes) -> bool:
         """Windows: Overlapped I/O WriteFile + WaitCommEvent + ReadFile"""
+        # 에러 상태 클리어 + 현재 버퍼 상태 확인
+        errors = wintypes.DWORD(0)
+        comstat = COMSTAT()
+        kernel32.ClearCommError(self._handle, ctypes.byref(errors), ctypes.byref(comstat))
+        if errors.value:
+            print(f"에러 클리어: {errors.value:#x}")
+        print(f"버퍼 상태: TX={comstat.cbOutQue}, RX={comstat.cbInQue}")
+
         # 수신 버퍼 클리어
         kernel32.PurgeComm(self._handle, PURGE_RXCLEAR)
 
@@ -267,12 +385,16 @@ class DoorLockController:
         result = kernel32.WaitCommEvent(
             self._handle, ctypes.byref(evt_mask), ctypes.byref(ov_wait)
         )
-        if not result:
+        if result:
+            # 이미 이벤트 발생 (즉시 완료)
+            print(f"WaitCommEvent 즉시 완료: evt_mask={evt_mask.value}")
+        else:
             err = ctypes.get_last_error()
-            if err != ERROR_IO_PENDING:
+            if err == ERROR_IO_PENDING:
+                print("WaitCommEvent 대기 시작 (IO_PENDING)")
+            else:
                 print(f"WaitCommEvent 시작 실패 (error: {err})")
                 wait_started = False
-            # ERROR_IO_PENDING = 정상 (비동기 대기 중)
 
         # 2. Overlapped WriteFile
         bytes_written = wintypes.DWORD(0)
@@ -304,8 +426,11 @@ class DoorLockController:
 
         print(f"명령 전송: {command.hex()} (WriteFile: {bytes_written.value} bytes)")
 
-        # 3. FlushFileBuffers - 데이터가 실제로 wire로 전송되도록 보장
-        kernel32.FlushFileBuffers(self._handle)
+        # 3. Write 후 TX 버퍼 상태 확인
+        errors2 = wintypes.DWORD(0)
+        comstat2 = COMSTAT()
+        kernel32.ClearCommError(self._handle, ctypes.byref(errors2), ctypes.byref(comstat2))
+        print(f"Write 후 버퍼: TX={comstat2.cbOutQue}, RX={comstat2.cbInQue}, errors={errors2.value:#x}")
 
         # 4. WaitCommEvent 완료 대기 (device 응답)
         if wait_started:
@@ -349,8 +474,11 @@ class DoorLockController:
                     else:
                         print("응답 데이터 없음")
             elif wr == WAIT_TIMEOUT:
-                print("WaitCommEvent 타임아웃")
-                # 타임아웃 시 pending WaitCommEvent 취소
+                # 타임아웃 후 최종 버퍼 상태 확인
+                errors3 = wintypes.DWORD(0)
+                comstat3 = COMSTAT()
+                kernel32.ClearCommError(self._handle, ctypes.byref(errors3), ctypes.byref(comstat3))
+                print(f"WaitCommEvent 타임아웃 (TX={comstat3.cbOutQue}, RX={comstat3.cbInQue}, err={errors3.value:#x})")
                 kernel32.CancelIo(self._handle)
             else:
                 print(f"WaitCommEvent 대기 실패: {wr}")
@@ -396,7 +524,6 @@ class DoorLockController:
             if sys.platform == 'win32':
                 kernel32.PurgeComm(self._handle, PURGE_RXCLEAR)
 
-                # Overlapped ReadFile
                 read_buf = (ctypes.c_char * 64)()
                 bytes_read = wintypes.DWORD(0)
                 ov_read = OVERLAPPED()
