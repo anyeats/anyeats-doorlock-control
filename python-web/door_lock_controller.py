@@ -167,7 +167,7 @@ else:
 
 
 class DoorLockController:
-    def __init__(self, port: str = 'COM2', baudrate: int = 9600, timeout: int = 1, append_cr: bool = True):
+    def __init__(self, port: str = 'COM2', baudrate: int = 9600, timeout: int = 1, append_cr: bool = False):
         """
         잠금장치 컨트롤러 초기화
 
@@ -175,7 +175,7 @@ class DoorLockController:
             port: COM 포트 (기본값: COM2)
             baudrate: 통신 속도 (기본값: 9600)
             timeout: 타임아웃 시간 (초)
-            append_cr: 명령어 끝에 CR(0x0D) 추가 여부 (기본값: True)
+            append_cr: 명령어 끝에 CR(0x0D) 추가 여부 (기본값: False, 제조사 프로그램과 동일)
         """
         self.port = port
         self.baudrate = baudrate
@@ -534,14 +534,28 @@ class DoorLockController:
             print(f"Raw 전송 실패: {e}")
             return False
 
+    def _build_frame(self, device_id: int, command_char: str) -> bytes:
+        """
+        DLE-STX 프레임 생성 (제조사 프로토콜)
+        프레임: DLE(10) STX(02) [DeviceID] [ESC(1B)] [Command] [FF] DLE(10) ETX(03)
+        """
+        return bytes([
+            0x10, 0x02,                    # DLE STX (프레임 시작)
+            device_id,                     # 장치 ID
+            0x1B,                          # ESC
+            ord(command_char),             # '1'=열기(0x31), '0'=닫기(0x30)
+            0xFF,                          # 고정값
+            0x10, 0x03,                    # DLE ETX (프레임 끝)
+        ])
+
     def open_lock(self, device_id: int = 1) -> bool:
         """잠금장치 열기"""
-        command = bytes([0x01, 0x00, 0x00, 0x00])
+        command = self._build_frame(device_id, '1')
         return self.send_command(command)
 
-    def close_lock(self) -> bool:
+    def close_lock(self, device_id: int = 1) -> bool:
         """잠금장치 닫기"""
-        command = bytes([0x00, 0x00, 0x00, 0x00])
+        command = self._build_frame(device_id, '0')
         return self.send_command(command)
 
     def read_status(self) -> Optional[dict]:

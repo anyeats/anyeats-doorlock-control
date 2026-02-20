@@ -41,7 +41,7 @@ def open_lock():
 
         success = ctrl.open_lock()
 
-        command_hex = '01 00 00 00' + (' 0D' if ctrl.append_cr else '')
+        command_hex = '10 02 01 1B 31 FF 10 03'
 
         if success:
             return jsonify({
@@ -83,7 +83,7 @@ def close_lock():
 
         success = ctrl.close_lock()
 
-        command_hex = '00 00 00 00' + (' 0D' if ctrl.append_cr else '')
+        command_hex = '10 02 01 1B 30 FF 10 03'
 
         if success:
             return jsonify({
@@ -202,12 +202,15 @@ def set_port():
         data = request.get_json()
         port = data.get('port', 'COM2')
 
+        # 기존 설정 보존
+        append_cr = controller.append_cr if controller else False
+
         # 기존 연결 해제
         if controller:
             controller.disconnect()
 
-        # 새 컨트롤러 생성
-        controller = DoorLockController(port=port)
+        # 새 컨트롤러 생성 (CR 설정 유지)
+        controller = DoorLockController(port=port, append_cr=append_cr)
 
         return jsonify({
             'success': True,
