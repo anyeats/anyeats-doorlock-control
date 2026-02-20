@@ -25,7 +25,7 @@ if sys.platform == 'win32':
             ('hEvent', wintypes.HANDLE),
         ]
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
 
 
 class DoorLockController:
@@ -120,7 +120,7 @@ class DoorLockController:
                 kernel32.CloseHandle(overlapped.hEvent)
                 return {'completed': True, 'has_data': bool(mask.value & EV_RXCHAR)}
 
-            error = ctypes.get_last_error() if hasattr(ctypes, 'get_last_error') else ctypes.GetLastError()
+            error = ctypes.get_last_error()
             if error == ERROR_IO_PENDING:
                 # 비동기 대기 중 - 핸들 반환
                 return {
@@ -219,15 +219,25 @@ class DoorLockController:
                 write_overlapped = OVERLAPPED()
                 write_overlapped.hEvent = kernel32.CreateEventW(None, True, False, None)
 
+                # bytes → c_char 배열로 변환 (ctypes 버퍼 전달 보장)
+                buf = (ctypes.c_char * len(command))(*command)
+
                 result = kernel32.WriteFile(
-                    handle, command, len(command),
+                    handle, buf, len(command),
                     ctypes.byref(bytes_written), ctypes.byref(write_overlapped)
                 )
-                if not result and ctypes.GetLastError() == ERROR_IO_PENDING:
+
+                error = ctypes.get_last_error()
+                if not result and error == ERROR_IO_PENDING:
+                    # 비동기 쓰기 완료 대기
+                    kernel32.WaitForSingleObject(write_overlapped.hEvent, 5000)
                     kernel32.GetOverlappedResult(
                         handle, ctypes.byref(write_overlapped),
                         ctypes.byref(bytes_written), True
                     )
+                elif not result:
+                    print(f"WriteFile 실패 (error: {error})")
+
                 kernel32.CloseHandle(write_overlapped.hEvent)
                 print(f"명령 전송: {command.hex()} (WriteFile: {bytes_written.value} bytes)")
             else:
