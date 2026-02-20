@@ -209,18 +209,31 @@ class DoorLockController:
             if self.append_cr:
                 command = command + bytes([0x0D])  # CR 추가
 
-            # 수신 버퍼 비우기
-            self.serial_conn.reset_input_buffer()
-
             # 1) WaitCommEvent를 먼저 걸어놓기 (제조사 프로그램과 동일한 순서)
-            #    응답 수신 대기를 먼저 시작한 뒤 명령을 전송해야 응답을 놓치지 않음
             wait_handle = self._start_wait_comm_event()
 
-            # 2) 명령어 전송
-            self.serial_conn.write(command)
-            self.serial_conn.flush()
+            # 2) ctypes WriteFile로 직접 전송 (pyserial 우회)
+            if sys.platform == 'win32':
+                handle = self.serial_conn._port_handle
+                bytes_written = wintypes.DWORD(0)
+                write_overlapped = OVERLAPPED()
+                write_overlapped.hEvent = kernel32.CreateEventW(None, True, False, None)
 
-            print(f"명령 전송: {command.hex()} (길이: {len(command)} bytes)")
+                result = kernel32.WriteFile(
+                    handle, command, len(command),
+                    ctypes.byref(bytes_written), ctypes.byref(write_overlapped)
+                )
+                if not result and ctypes.GetLastError() == ERROR_IO_PENDING:
+                    kernel32.GetOverlappedResult(
+                        handle, ctypes.byref(write_overlapped),
+                        ctypes.byref(bytes_written), True
+                    )
+                kernel32.CloseHandle(write_overlapped.hEvent)
+                print(f"명령 전송: {command.hex()} (WriteFile: {bytes_written.value} bytes)")
+            else:
+                self.serial_conn.write(command)
+                self.serial_conn.flush()
+                print(f"명령 전송: {command.hex()} (길이: {len(command)} bytes)")
 
             # 3) WaitCommEvent 결과 확인
             if self._finish_wait_comm_event(wait_handle, timeout_ms=int(self.timeout * 1000)):
