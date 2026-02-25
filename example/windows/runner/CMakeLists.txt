@@ -38,3 +38,24 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
+
+# Post-build: copy all required runtime files next to the executable.
+# The CMake install step uses an absolute prefix (C:/Program Files/...) which
+# does not match the output directory, so files are copied here explicitly.
+add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${FLUTTER_LIBRARY}"
+    "$<TARGET_FILE_DIR:${BINARY_NAME}>/flutter_windows.dll"
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+    "$<TARGET_FILE_DIR:${BINARY_NAME}>/data"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${FLUTTER_ICU_DATA_FILE}"
+    "$<TARGET_FILE_DIR:${BINARY_NAME}>/data/icudtl.dat"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_BINARY_DIR}/../../flutter_assets"
+    "$<TARGET_FILE_DIR:${BINARY_NAME}>/data/flutter_assets"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    $<TARGET_FILE:anyeats_door_lock_plugin>
+    "$<TARGET_FILE_DIR:${BINARY_NAME}>"
+  COMMENT "Copying Flutter runtime files and plugins to output directory"
+)
