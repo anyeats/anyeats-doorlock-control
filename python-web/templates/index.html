@@ -139,8 +139,18 @@
             color: white;
         }
 
+        .btn-open5sec {
+            background: linear-gradient(135deg, #0ba360 0%, #3cba92 100%);
+            color: white;
+        }
+
         .btn-status {
             background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+
+        .btn-query-status {
+            background: linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%);
             color: white;
         }
 
@@ -377,6 +387,8 @@
             <div class="button-group">
                 <button class="btn btn-open" onclick="openLock()">🔓 OPEN</button>
                 <button class="btn btn-close" onclick="closeLock()">🔒 CLOSE</button>
+                <button class="btn btn-open5sec" onclick="openLock5sec()">🔓⏱ OPEN (5초)</button>
+                <button class="btn btn-query-status" onclick="queryStatus()">📡 상태 조회</button>
                 <button class="btn btn-status" onclick="readStatus()">📊 READ STATUS</button>
                 <button class="btn btn-id" onclick="checkId()">🆔 ID CHECK</button>
                 <button class="btn btn-test" onclick="connectionTest()">🔌 연결 테스트</button>
@@ -465,6 +477,30 @@
             }
         }
 
+        async function openLock5sec() {
+            addLog('🔓⏱ OPEN (5초 자동잠금) 명령 전송 중... (10 02 01 1B 31 31 10 03)', 'info');
+
+            try {
+                const response = await fetch('/api/open5sec', {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    addLog(`✓ ${data.message}`, 'success');
+                    showStatus(data);
+                } else {
+                    addLog(`✗ ${data.message}`, 'error');
+                    if (data.traceback) {
+                        console.error(data.traceback);
+                    }
+                }
+            } catch (error) {
+                addLog(`✗ 오류: ${error.message}`, 'error');
+            }
+        }
+
         async function closeLock() {
             addLog('🔒 CLOSE 명령 전송 중... (0x00 0x00 0x00 0x00)', 'info');
 
@@ -477,6 +513,34 @@
 
                 if (data.success) {
                     addLog(`✓ ${data.message}`, 'success');
+                    showStatus(data);
+                } else {
+                    addLog(`✗ ${data.message}`, 'error');
+                    if (data.traceback) {
+                        console.error(data.traceback);
+                    }
+                }
+            } catch (error) {
+                addLog(`✗ 오류: ${error.message}`, 'error');
+            }
+        }
+
+        async function queryStatus() {
+            addLog('📡 상태 조회 명령 전송 중... (10 02 01 1C FF 00 10 03)', 'info');
+
+            try {
+                const response = await fetch('/api/query-status', {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    addLog(`✓ ${data.description}`, 'success');
+                    addLog(`   Lock: ${data.lock}, Door: ${data.door}, Code: ${data.status_code}`, 'info');
+                    if (data.raw_data) {
+                        addLog(`   Raw: ${data.raw_data}`, 'info');
+                    }
                     showStatus(data);
                 } else {
                     addLog(`✗ ${data.message}`, 'error');

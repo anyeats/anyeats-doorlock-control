@@ -81,9 +81,24 @@ class _DoorLockPageState extends State<DoorLockPage> {
     _log(ok ? 'Open 명령 전송 (10 02 01 1B 31 FF 10 03)' : 'Open 실패');
   }
 
+  Future<void> _open5sec() async {
+    final ok = await _controller.openLock5sec();
+    _log(ok ? 'Open(5초) 명령 전송 (10 02 01 1B 31 31 10 03)' : 'Open(5초) 실패');
+  }
+
   Future<void> _close() async {
     final ok = await _controller.closeLock();
     _log(ok ? 'Close 명령 전송 (10 02 01 1B 30 FF 10 03)' : 'Close 실패');
+  }
+
+  Future<void> _queryStatus() async {
+    final status = await _controller.queryStatus();
+    if (status != null) {
+      _log('상태 조회: ${status.description} (code: ${status.statusCode})');
+      _log('  Lock: ${status.isLockOpen ? "열림" : "닫힘"}, Door: ${status.isDoorOpen ? "열림" : "닫힘"}');
+    } else {
+      _log('상태 조회 실패');
+    }
   }
 
   Future<void> _sendRaw() async {
@@ -163,6 +178,44 @@ class _DoorLockPageState extends State<DoorLockPage> {
                           const Text('Close', style: TextStyle(fontSize: 18)),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.orange,
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // Open(5초) / 상태 조회 버튼
+            Row(
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    height: 60,
+                    child: ElevatedButton.icon(
+                      onPressed: _connected ? _open5sec : null,
+                      icon: const Icon(Icons.timer, size: 28),
+                      label: const Text('Open (5초)',
+                          style: TextStyle(fontSize: 16)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.teal,
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: SizedBox(
+                    height: 60,
+                    child: ElevatedButton.icon(
+                      onPressed: _connected ? _queryStatus : null,
+                      icon: const Icon(Icons.info_outline, size: 28),
+                      label: const Text('상태 조회',
+                          style: TextStyle(fontSize: 16)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.purple,
                         foregroundColor: Colors.white,
                       ),
                     ),

@@ -1,2 +1,3 @@
 export 'src/door_lock_controller.dart';
-export 'src/door_lock_protocol.dart' show DoorLockProtocol, DoorLockResponse;
+export 'src/door_lock_protocol.dart'
+    show DoorLockProtocol, DoorLockResponse, DoorLockStatus;

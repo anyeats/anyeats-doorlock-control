@@ -186,6 +186,7 @@ class DoorLockController:
         self._read_event = None
         self._wait_event = None
         self.serial_conn = None  # pyserial 폴백 (비Windows용)
+        self._last_response = None  # 마지막 응답 데이터
 
     def connect(self) -> bool:
         """시리얼 포트에 연결"""
@@ -470,8 +471,10 @@ class DoorLockController:
 
                     if bytes_read.value > 0:
                         response = bytes(read_buf[:bytes_read.value])
+                        self._last_response = response
                         print(f"응답 수신: {response.hex()}")
                     else:
+                        self._last_response = None
                         print("응답 데이터 없음")
             elif wr == WAIT_TIMEOUT:
                 # 타임아웃 후 최종 버퍼 상태 확인
@@ -499,8 +502,10 @@ class DoorLockController:
         time.sleep(0.15)
         if self.serial_conn.in_waiting > 0:
             response = self.serial_conn.read(self.serial_conn.in_waiting)
+            self._last_response = response
             print(f"응답 수신: {response.hex()}")
         else:
+            self._last_response = None
             print("응답 없음 (타임아웃)")
 
         return True
@@ -534,17 +539,17 @@ class DoorLockController:
             print(f"Raw 전송 실패: {e}")
             return False
 
-    def _build_frame(self, device_id: int, command_char: str) -> bytes:
+    def _build_frame(self, device_id: int, command_char: str, param: int = 0xFF) -> bytes:
         """
         DLE-STX 프레임 생성 (제조사 프로토콜)
-        프레임: DLE(10) STX(02) [DeviceID] [ESC(1B)] [Command] [FF] DLE(10) ETX(03)
+        프레임: DLE(10) STX(02) [DeviceID] [ESC(1B)] [Command] [Param] DLE(10) ETX(03)
         """
         return bytes([
             0x10, 0x02,                    # DLE STX (프레임 시작)
             device_id,                     # 장치 ID
             0x1B,                          # ESC
             ord(command_char),             # '1'=열기(0x31), '0'=닫기(0x30)
-            0xFF,                          # 고정값
+            param,                         # 파라미터 (0xFF=일반, 0x31=5초 자동잠금)
             0x10, 0x03,                    # DLE ETX (프레임 끝)
         ])
 
@@ -553,10 +558,91 @@ class DoorLockController:
         command = self._build_frame(device_id, '1')
         return self.send_command(command)
 
+    def open_lock_5sec(self, device_id: int = 1) -> bool:
+        """잠금장치 열기 (5초 후 자동잠금) - 문이 열리지 않으면 5초 후 닫힘"""
+        command = self._build_frame(device_id, '1', param=0x31)
+        return self.send_command(command)
+
     def close_lock(self, device_id: int = 1) -> bool:
         """잠금장치 닫기"""
         command = self._build_frame(device_id, '0')
         return self.send_command(command)
+
+    def query_status(self, device_id: int = 1) -> Optional[dict]:
+        """
+        잠금장치 상태 조회 (능동적 쿼리)
+        명령: 10 02 [DeviceID] 1C FF 00 10 03
+        응답 상태코드: "00"=잠금해제(문닫힘), "01"=잠금(문닫힘), "10"=문열림
+        """
+        command = bytes([
+            0x10, 0x02,        # DLE STX
+            device_id,         # 장치 ID
+            0x1C,              # 상태 조회 명령
+            0xFF, 0x00,        # 파라미터
+            0x10, 0x03,        # DLE ETX
+        ])
+
+        self._last_response = None
+        success = self.send_command(command)
+
+        if not success or self._last_response is None:
+            return None
+
+        return self._parse_status_response(self._last_response)
+
+    def _parse_status_response(self, data: bytes) -> Optional[dict]:
+        """상태 조회 응답 파싱"""
+        STATUS_MAP = {
+            '00': {'lock': 'open', 'door': 'closed', 'description': '잠금 해제 (문 닫힘)'},
+            '01': {'lock': 'closed', 'door': 'closed', 'description': '잠금 (문 닫힘)'},
+            '10': {'lock': 'open', 'door': 'open', 'description': '문 열림'},
+        }
+
+        status_code = None
+
+        # SOH 프로토콜: SOH(01) + ASCII 2bytes + DLE(10) + ETX(03)
+        if len(data) >= 5:
+            for i in range(len(data) - 4):
+                if data[i] == 0x01 and data[i+3] == 0x10 and data[i+4] == 0x03:
+                    try:
+                        status_code = data[i+1:i+3].decode('ascii')
+                        break
+                    except (UnicodeDecodeError, ValueError):
+                        pass
+
+        # DLE-STX + 'S' 마커 프로토콜: STX(02) S(53) DeviceID Status1 Status2 DLE(10) ETX(03)
+        if status_code is None and len(data) >= 7:
+            for i in range(len(data) - 6):
+                if data[i] == 0x02 and data[i+1] == 0x53:
+                    try:
+                        status_code = data[i+3:i+5].decode('ascii')
+                        break
+                    except (UnicodeDecodeError, ValueError):
+                        pass
+
+        if status_code is None:
+            print(f"상태코드 파싱 실패: {data.hex()}")
+            return {
+                'status_code': None,
+                'lock': 'unknown',
+                'door': 'unknown',
+                'description': f'파싱 실패 (raw: {data.hex()})',
+                'raw_data': data.hex()
+            }
+
+        info = STATUS_MAP.get(status_code, {
+            'lock': 'unknown',
+            'door': 'unknown',
+            'description': f'알 수 없는 상태코드: {status_code}'
+        })
+
+        return {
+            'status_code': status_code,
+            'lock': info['lock'],
+            'door': info['door'],
+            'description': info['description'],
+            'raw_data': data.hex()
+        }
 
     def read_status(self) -> Optional[dict]:
         """잠금장치 상태 읽기"""

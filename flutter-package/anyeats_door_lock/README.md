@@ -7,15 +7,20 @@ DLE-STX 프레임 프로토콜 기반 잠금장치 시리얼 통신 Flutter 패�
 제조사 시리얼 모니터 캡처(IMG_0778)에서 확인된 프로토콜:
 
 ```
-DLE(10) STX(02) [DeviceID] ESC(1B) [Command] FF DLE(10) ETX(03)
+명령:   DLE(10) STX(02) [DeviceID] ESC(1B) [Cmd] [Param] DLE(10) ETX(03)
+조회:   DLE(10) STX(02) [DeviceID] 1C FF 00 DLE(10) ETX(03)
 ```
 
 | 명령 | 바이트 |
 |------|--------|
 | Open | `10 02 01 1B 31 FF 10 03` |
+| Open (5초 자동잠금) | `10 02 01 1B 31 31 10 03` |
 | Close | `10 02 01 1B 30 FF 10 03` |
+| 상태 조회 | `10 02 01 1C FF 00 10 03` |
 
 응답: `SOH(01) + ASCII 2bytes + DLE(10) + ETX(03)`
+
+상태코드: `"00"`=잠금해제(문닫힘), `"01"`=잠금(문닫힘), `"10"`=문열림
 
 ## 사용법
 
@@ -25,8 +30,16 @@ import 'package:anyeats_door_lock/anyeats_door_lock.dart';
 final controller = DoorLockController(port: 'COM2', baudRate: 9600);
 controller.connect();
 
-await controller.openLock();   // 열기
-await controller.closeLock();  // 닫기
+await controller.openLock();        // 열기
+await controller.openLock5sec();    // 열기 (5초 자동잠금)
+await controller.closeLock();       // 닫기
+
+final status = await controller.queryStatus();  // 상태 조회
+if (status != null) {
+  print(status.isLockOpen);   // 잠금 해제 여부
+  print(status.isDoorOpen);   // 문 열림 여부
+  print(status.description);  // "잠금 해제 (문 닫힘)" 등
+}
 
 controller.disconnect();
 ```

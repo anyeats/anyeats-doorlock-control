@@ -68,6 +68,46 @@ def open_lock():
         }), 500
 
 
+@app.route('/api/open5sec', methods=['POST'])
+def open_lock_5sec():
+    """잠금장치 열기 (5초 후 자동잠금) API"""
+    try:
+        ctrl = get_controller()
+
+        print(f"\n{'='*60}")
+        print(f"[OPEN5SEC] 명령 전송 시작 (5초 자동잠금)")
+        print(f"포트: {ctrl.port}, Baud: {ctrl.baudrate}")
+        print(f"{'='*60}\n")
+
+        success = ctrl.open_lock_5sec()
+
+        command_hex = '10 02 01 1B 31 31 10 03'
+
+        if success:
+            return jsonify({
+                'success': True,
+                'message': '잠금장치를 열었습니다. (5초 후 자동잠금)',
+                'command': command_hex,
+                'details': {
+                    'port': ctrl.port,
+                    'rtscts': True,
+                    'auto_lock': '5sec'
+                }
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': '명령 전송에 실패했습니다.'
+            }), 500
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f'오류 발생: {str(e)}',
+            'traceback': traceback.format_exc()
+        }), 500
+
+
 @app.route('/api/close', methods=['POST'])
 def close_lock():
     """잠금장치 닫기 API"""
@@ -100,6 +140,44 @@ def close_lock():
             return jsonify({
                 'success': False,
                 'message': '명령 전송에 실패했습니다.'
+            }), 500
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f'오류 발생: {str(e)}',
+            'traceback': traceback.format_exc()
+        }), 500
+
+
+@app.route('/api/query-status', methods=['POST'])
+def query_status():
+    """잠금장치 상태 조회 API (능동적 쿼리)"""
+    try:
+        ctrl = get_controller()
+
+        print(f"\n{'='*60}")
+        print(f"[QUERY STATUS] 상태 조회 명령 전송")
+        print(f"포트: {ctrl.port}, Baud: {ctrl.baudrate}")
+        print(f"{'='*60}\n")
+
+        result = ctrl.query_status()
+
+        if result:
+            return jsonify({
+                'success': True,
+                'status_code': result['status_code'],
+                'lock': result['lock'],
+                'door': result['door'],
+                'description': result['description'],
+                'raw_data': result['raw_data'],
+                'command': '10 02 01 1C FF 00 10 03',
+                'message': result['description']
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': '상태 조회에 실패했습니다.'
             }), 500
 
     except Exception as e:
