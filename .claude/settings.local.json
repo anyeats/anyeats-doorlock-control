@@ -2,7 +2,22 @@
   "permissions": {
     "allow": [
       "Bash(chmod:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "WebSearch",
+      "WebFetch(domain:pub.dev)",
+      "Bash(flutter pub get:*)",
+      "Bash(flutter analyze:*)",
+      "Bash(flutter test:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\n[feat] Flutter 패키지에 DLE-STX 시리얼 통신 구현 \\(Windows only\\)\n\n- serial_port_win32 패키지 기반으로 순수 Dart 구현\n- DoorLockProtocol: DLE-STX 프레임 빌드/파싱 \\(제조사 프로토콜\\)\n- DoorLockController: connect, openLock, closeLock, sendRaw API\n- Example 앱: COM 포트 선택, Open/Close 버튼, Raw Hex 전송, 로그 표시\n- Android 플랫폼 제거 \\(Windows only\\)\n- 프로토콜 단위 테스트 7개 통과\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit:*)",
+      "Bash(git -C /Users/jlee/Documents/Dev/source/door_lock/door_lock_control add flutter-package/anyeats_door_lock/README.md)",
+      "Bash(git -C /Users/jlee/Documents/Dev/source/door_lock/door_lock_control commit -m \"$\\(cat <<''EOF''\n[feat] Flutter 패키지 README 작성 \\(프로토콜, 사용법, Windows 실행 가이드\\)\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "mcp__ide__getDiagnostics",
+      "Bash(git mv:*)",
+      "Bash(git remote add:*)",
+      "Bash(git push:*)",
+      "Bash(gh auth:*)"
     ]
   }
 }

@@ -24,6 +24,18 @@ DLE-STX 프레임 프로토콜 기반 잠금장치 시리얼 통신 Flutter 패�
 
 ## 사용법
 
+### 프로젝트 연동
+With Flutter:
+```dart
+dependencies:
+  doorlock:
+    git:
+      url: https://github.com/anyeats/anyeats-doorlock-control
+      ref: "4f75451"
+```
+
+### 기능 연동
+
 ```dart
 import 'package:anyeats_door_lock/anyeats_door_lock.dart';
 
@@ -54,7 +66,7 @@ lib/
     └── door_lock_controller.dart   # serial_port_win32 기반 컨트롤러
 ```
 
-## Windows에서 실행하기
+## Windows에서 Example실행하기
 
 ### 사전 준비
 
@@ -84,9 +96,7 @@ flutter pub get
 flutter run -d windows
 ```
 
-첫 빌드는 C++ 컴파일 때문에 2-3분 소요, 이후에는 빠릅니다.
-
-### 릴리즈 빌드 (배포용)
+### 릴리즈 빌드
 
 ```powershell
 flutter build windows --release
@@ -98,10 +108,3 @@ flutter build windows --release
 
 - [serial_port_win32](https://pub.dev/packages/serial_port_win32) - Windows 시리얼 포트 통신
 
-## 시리얼 포트 설정
-
-- Baud Rate: 9600
-- Data Bits: 8
-- Parity: None
-- Stop Bits: 1
-- Flow Control: RTS/DTR enabled
